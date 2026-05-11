@@ -85,7 +85,7 @@ Quick reference:
 | POST   | `/switch-tab`        | Activate a tab in window 1 by index           |
 | POST   | `/ensure-window`     | Activate Chrome, create window/tab if needed |
 | GET    | `/screenshot`        | PNG of the viewport, base64-encoded           |
-| GET    | `/feed`              | Navigate + scroll + extract feed posts        |
+| POST   | `/batch`             | Run a sequence of endpoint calls with pause   |
 
 ## Examples
 
@@ -111,6 +111,19 @@ curl -sX POST "$URL/eval" \
 curl -s "$URL/screenshot" \
   -H "Authorization: Bearer $TOKEN" \
   | jq -r .image | base64 -d > /tmp/page.png
+
+# Batch: navigate, wait, scroll, screenshot — with a 300ms pause between steps
+curl -sX POST "$URL/batch" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "pauseBetween": 300,
+    "batch": [
+      { "func": "/navigate",   "data": { "url": "https://example.com", "wait": true } },
+      { "func": "/scroll-down", "data": { "times": 2 } },
+      { "func": "/screenshot",  "method": "GET" }
+    ]
+  }'
 ```
 
 ## Security

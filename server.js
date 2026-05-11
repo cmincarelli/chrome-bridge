@@ -770,36 +770,42 @@ app.get('/screenshot', {
   }
 });
 
-// GET /feed?url=...&scrolls=5&delay_ms=1200&pixels=700&tab=
-// Navigates, scrolls, and extracts posts at each step — deduped.
-app.get('/feed', {
+// POST /batch { pauseBetween?, batch: [{ func, method?, data? }, ...] }
+// Runs a sequence of internal endpoint calls. Method defaults to POST if data
+// is provided, GET otherwise. The caller's Authorization header is forwarded.
+app.post('/batch', {
   schema: {
-    summary: 'Navigate, scroll, and extract feed posts (deduped)',
-    querystring: {
-      type: 'object', required: ['url'],
+    summary: 'Run a sequence of internal endpoint calls with optional pause between them',
+    body: {
+      type: 'object', required: ['batch'],
       properties: {
-        url: { type: 'string' },
-        scrolls: { type: 'integer', default: 5, maximum: 30 },
-        delay_ms: { type: 'integer', default: 1200 },
-        pixels: { type: 'integer', default: 700 },
-        tab: { type: 'integer', minimum: 1 },
+        pauseBetween: { type: 'integer', minimum: 0, default: 0, description: 'ms to pause between requests' },
+        batch: {
+          type: 'array',
+          items: {
+            type: 'object', required: ['func'],
+            properties: {
+              func: { type: 'string', description: 'Path to call, e.g. "/navigate"' },
+              method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'], description: 'Defaults to POST if data is set, else GET' },
+              data: { description: 'Body for POST/PUT/PATCH, or query params object for GET' },
+            },
+          },
+        },
       },
     },
     response: {
       200: {
         type: 'object',
         properties: {
-          ok: { type: 'boolean' },
-          count: { type: 'integer' },
-          scrolls: { type: 'integer' },
-          posts: {
+          results: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                author: { type: 'string', nullable: true },
-                text: { type: 'string' },
-                source: { type: 'string' },
+                ok: { type: 'boolean' },
+                status: { type: 'integer' },
+                body: {},
+                error: { type: 'string' },
               },
             },
           },
@@ -808,67 +814,48 @@ app.get('/feed', {
     },
   },
 }, async (req, reply) => {
-  const { url, scrolls = 5, delay_ms = 1200, pixels = 700, tab } = req.query || {};
-  if (!url || !/^https?:\/\//.test(url))
-    return reply.code(400).send({ error: 'url param required (http/https)' });
+  const { pauseBetween = 0, batch } = req.body || {};
+  if (!Array.isArray(batch))
+    return reply.code(400).send({ error: 'batch must be an array' });
 
-  const count = Math.min(Number(scrolls), 30);
-  const delay = Number(delay_ms);
-  const px = Number(pixels);
+  const results = [];
+  const auth = req.headers.authorization;
 
-  const extractJS = `
-    (function() {
-      const seen = new Set();
-      const posts = [];
-      document.querySelectorAll('div[data-ad-comet-preview=message],div[data-ad-preview=message]').forEach(el => {
-        const text = el.innerText.trim();
-        if (text.length < 15 || seen.has(text)) return;
-        seen.add(text);
-        const article = el.closest('[role=article]');
-        const author = article?.querySelector('h2,h3')?.innerText?.trim() || null;
-        posts.push({ author, text: text.slice(0, 500), source: 'message' });
-      });
-      if (posts.length === 0) {
-        document.querySelectorAll('[role=article]').forEach(el => {
-          const text = el.innerText
-            .replace(/^(Like|Comment|Share|View|Follow|See more|Repost)\\s*/gm, '')
-            .replace(/\\s+/g, ' ').trim();
-          if (text.length < 80 || seen.has(text)) return;
-          seen.add(text);
-          const author = el.querySelector('h2,h3')?.innerText?.trim() || null;
-          posts.push({ author, text: text.slice(0, 500), source: 'article' });
-        });
-      }
-      return JSON.stringify(posts);
-    })()
-  `;
+  for (let i = 0; i < batch.length; i++) {
+    if (i > 0 && pauseBetween > 0)
+      await new Promise(r => setTimeout(r, pauseBetween));
 
-  try {
-    await chromeNavigate(url, tab);
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const state = await chromeReadyState(tab);
-      if (state === 'complete') break;
-      await new Promise(r => setTimeout(r, 500));
+    const { func, method, data } = batch[i] || {};
+    if (typeof func !== 'string' || !func.startsWith('/')) {
+      results.push({ ok: false, error: 'func must be a path starting with /' });
+      continue;
     }
-    await new Promise(r => setTimeout(r, 1500));
-
-    const allPosts = new Map();
-    const initial = JSON.parse(await chromeEval(extractJS, DEFAULT_TIMEOUT_MS, tab));
-    initial.forEach(p => allPosts.set(p.text, p));
-
-    for (let i = 0; i < count; i++) {
-      await chromeEval(`JSON.stringify({ y: (window.scrollBy(0, ${px}), window.scrollY) })`, DEFAULT_TIMEOUT_MS, tab);
-      await new Promise(r => setTimeout(r, delay));
-      const batch = JSON.parse(await chromeEval(extractJS, DEFAULT_TIMEOUT_MS, tab));
-      batch.forEach(p => allPosts.set(p.text, p));
+    if (func === '/batch') {
+      results.push({ ok: false, error: 'recursive /batch not allowed' });
+      continue;
     }
 
-    const posts = Array.from(allPosts.values());
-    return { ok: true, count: posts.length, scrolls: count, posts };
-  } catch (err) {
-    return fail(req, reply, err);
+    const m = method || (data !== undefined ? 'POST' : 'GET');
+    const opts = { method: m, url: func, headers: { authorization: auth } };
+    if (m === 'GET') {
+      if (data && typeof data === 'object') opts.query = data;
+    } else if (data !== undefined) {
+      opts.payload = data;
+      opts.headers['content-type'] = 'application/json';
+    }
+
+    try {
+      const res = await app.inject(opts);
+      let body;
+      try { body = JSON.parse(res.body); } catch { body = res.body; }
+      results.push({ ok: res.statusCode < 400, status: res.statusCode, body });
+    } catch (err) {
+      req.log.error({ err: err.message, func, method: m }, 'batch step failed');
+      results.push({ ok: false, error: 'internal error' });
+    }
   }
+
+  return { results };
 });
 
 // ─── boot ────────────────────────────────────────────────────────────
