@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import rateLimit from '@fastify/rate-limit';
+import cors from '@fastify/cors';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -131,9 +132,15 @@ async function chromeEval(js, timeoutMs, tab) {
 const app = Fastify({ logger: true });
 
 function fail(req, reply, err) {
+  if (err.message?.includes('(-1719)')) {
+    req.log.warn({ reqId: req.id }, 'no browser window open');
+    return reply.code(409).send({ error: 'no browser window open — call POST /ensure-window or POST /navigate first' });
+  }
   req.log.error({ err: err.message, stack: err.stack }, 'request failed');
   return reply.code(500).send({ error: 'internal error' });
 }
+
+await app.register(cors, { origin: true, methods: ['GET', 'POST', 'OPTIONS'] });
 
 await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
 
