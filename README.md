@@ -91,7 +91,9 @@ Quick reference:
 
 ```sh
 TOKEN="$(grep ^BRIDGE_TOKEN .env | cut -d= -f2)"
-URL="http://127.0.0.1:8765"
+HOST="$(grep ^HOST .env | cut -d= -f2)"
+PORT="$(grep ^PORT .env | cut -d= -f2)"
+URL="http://$HOST:$PORT"
 
 # Navigate and wait for load
 curl -sX POST "$URL/navigate" \
