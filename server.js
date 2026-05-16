@@ -185,7 +185,7 @@ app.post('/navigate', {
         timeout_ms: { type: 'integer', default: 30000 },
       },
     },
-    response: { 200: { type: 'object', properties: { ok: { type: 'boolean' }, state: { type: 'string' } } } },
+    response: { 200: { type: 'object', properties: { ok: { type: 'boolean' }, state: { type: 'string' }, status: { type: 'integer' } } } },
   },
 }, async (req, reply) => {
   const { url, tab, wait = false, timeout_ms = 30_000 } = req.body || {};
@@ -197,7 +197,15 @@ app.post('/navigate', {
       const deadline = Date.now() + timeout_ms;
       while (Date.now() < deadline) {
         const state = await chromeReadyState(tab);
-        if (state === 'complete') return { ok: true, state };
+        if (state === 'complete') {
+          const raw = await chromeEval(
+            `String(performance.getEntriesByType('navigation')[0]?.responseStatus ?? '')`,
+            timeout_ms,
+            tab
+          );
+          const status = raw ? parseInt(raw, 10) : undefined;
+          return { ok: true, state, ...(status ? { status } : {}) };
+        }
         await new Promise(r => setTimeout(r, 500));
       }
       return reply.code(408).send({ error: 'timeout waiting for ready' });

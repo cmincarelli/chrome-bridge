@@ -63,7 +63,7 @@ Quick reference:
 | Method | Path                 | Purpose                                       |
 | ------ | -------------------- | --------------------------------------------- |
 | GET    | `/health`            | Liveness check                                |
-| POST   | `/navigate`          | Navigate to URL (optionally wait for ready)   |
+| POST   | `/navigate`          | Navigate to URL; `wait:true` returns HTTP `status` |
 | GET    | `/ready-state`       | `document.readyState`                         |
 | POST   | `/wait-for-ready`    | Poll until `readyState === 'complete'`        |
 | GET    | `/url`               | Tab URL                                       |
@@ -95,11 +95,12 @@ HOST="$(grep ^HOST .env | cut -d= -f2)"
 PORT="$(grep ^PORT .env | cut -d= -f2)"
 URL="http://$HOST:$PORT"
 
-# Navigate and wait for load
+# Navigate and wait for load — returns HTTP status code of the page
 curl -sX POST "$URL/navigate" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","wait":true}'
+# → {"ok":true,"state":"complete","status":200}
 
 # Collect every link on the page
 curl -sX POST "$URL/eval" \
