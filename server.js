@@ -350,10 +350,14 @@ app.post('/eval', {
   if (typeof js !== 'string' || js.length === 0)
     return reply.code(400).send({ error: 'js must be non-empty string' });
   try {
-    const raw = await chromeEval(js, timeout_ms, tab);
     if (parse_json) {
+      const wrapped = `JSON.stringify(eval(${JSON.stringify(js)}))`;
+      const raw = await chromeEval(wrapped, timeout_ms, tab);
       try { const parsed = JSON.parse(raw); reply.type('application/json'); return parsed; } catch {}
+      reply.type('application/json');
+      return { result: raw };
     }
+    const raw = await chromeEval(js, timeout_ms, tab);
     reply.type('application/json');
     return { result: raw };
   } catch (err) {
