@@ -191,11 +191,17 @@ async function humanMouseMove(selector, tab, moveMs = 800) {
   })()`, DEFAULT_TIMEOUT_MS, tab);
 
   if (!coordsRaw || coordsRaw === 'null') return; // element not found — caller handles
-  const { x: tx, y: ty } = JSON.parse(coordsRaw);
+  let tx, ty;
+  try {
+    ({ x: tx, y: ty } = JSON.parse(coordsRaw));
+  } catch {
+    throw new Error('Could not parse element coordinates from Chrome');
+  }
 
   // Get current cursor position from System Events ("x, y" string)
   const posRaw = await osa(`tell application "System Events" to get the position of the cursor`);
   const [sx, sy] = posRaw.split(',').map(Number);
+  if (isNaN(sx) || isNaN(sy)) throw new Error('Could not read cursor position from System Events');
 
   if (Math.hypot(tx - sx, ty - sy) < 5) return; // already on target
 
