@@ -570,7 +570,7 @@ app.post(
   },
 );
 
-// POST /click { selector, tab? }
+// POST /click { selector, tab?, human_move?, move_ms? }
 app.post(
   '/click',
   {
@@ -582,17 +582,30 @@ app.post(
         properties: {
           selector: { type: 'string' },
           tab: { type: 'integer', minimum: 1 },
+          human_move: {
+            type: 'boolean',
+            default: false,
+            description: 'Move cursor to element in a human-like path before clicking',
+          },
+          move_ms: {
+            type: 'integer',
+            default: 800,
+            minimum: 200,
+            maximum: 5000,
+            description: 'Total cursor move duration in ms (requires human_move: true)',
+          },
         },
       },
     },
   },
   async (req, reply) => {
-    const { selector, tab } = req.body || {};
+    const { selector, tab, human_move = false, move_ms = 800 } = req.body || {};
     if (typeof selector !== 'string' || selector.length === 0)
       return reply
         .code(400)
         .send({ error: 'selector must be non-empty string' });
     try {
+      if (human_move) await humanMouseMove(selector, tab, move_ms);
       const js = `(function(){
       const el=document.querySelector(${JSON.stringify(selector)});
       if(!el) return JSON.stringify({ok:false,error:'element not found'});
