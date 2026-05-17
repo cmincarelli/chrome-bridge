@@ -151,6 +151,7 @@ async function chromeEval(js, timeoutMs, tab) {
 // Returns array of [x, y] screen-coordinate waypoints following a curved,
 // noisy path from (x0,y0) to (x1,y1). steps controls resolution.
 function humanPath(x0, y0, x1, y1, steps) {
+  steps = Math.max(1, steps);
   const dx = x1 - x0, dy = y1 - y0;
   const len = Math.hypot(dx, dy);
   const perp = (Math.random() - 0.5) * len * 0.4;
