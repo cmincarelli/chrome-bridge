@@ -192,10 +192,33 @@ async function swiftRun(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
+// Move the OS cursor to screen coordinates (tx, ty) along a human-like path.
+async function humanMouseMoveToScreen(tx, ty, moveMs = 800) {
+  const ms = Math.max(200, Math.min(5000, moveMs));
+
+  const posRaw = await swiftRun(
+    'import CoreGraphics\nlet p = CGEvent(source: nil)!.location\nprint("\\(Int(p.x)),\\(Int(p.y))")\n',
+    10_000,
+  );
+  const [sx, sy] = posRaw.split(',').map(Number);
+  if (isNaN(sx) || isNaN(sy)) throw new Error('Could not read cursor position');
+
+  if (Math.hypot(tx - sx, ty - sy) < 5) return; // already on target
+
+  const steps = Math.max(50, Math.min(120, Math.round(ms / 16)));
+  const pts = humanPath(sx, sy, tx, ty, steps);
+  const delayUs = Math.round((ms / steps) * 1000);
+
+  const moves = pts
+    .map(([x, y]) => `CGWarpMouseCursorPosition(CGPoint(x:${x},y:${y}))\nusleep(${delayUs})`)
+    .join('\n');
+  await swiftRun(`import CoreGraphics\n${moves}\n`, DEFAULT_TIMEOUT_MS);
+}
+
+// Resolve a CSS selector to screen coordinates then move the cursor.
 async function humanMouseMove(selector, tab, moveMs = 800) {
   const ms = Math.max(200, Math.min(5000, moveMs));
 
-  // Get target element's center in screen (logical) coordinates
   const coordsRaw = await chromeEval(`(function(){
     const el = document.querySelector(${JSON.stringify(selector)});
     if (!el) return 'null';
@@ -215,25 +238,7 @@ async function humanMouseMove(selector, tab, moveMs = 800) {
     throw new Error('Could not parse element coordinates from Chrome');
   }
 
-  // Get current cursor position via CoreGraphics (no Accessibility permission needed)
-  const posRaw = await swiftRun(
-    'import CoreGraphics\nlet p = CGEvent(source: nil)!.location\nprint("\\(Int(p.x)),\\(Int(p.y))")\n',
-    10_000,
-  );
-  const [sx, sy] = posRaw.split(',').map(Number);
-  if (isNaN(sx) || isNaN(sy)) throw new Error('Could not read cursor position');
-
-  if (Math.hypot(tx - sx, ty - sy) < 5) return; // already on target
-
-  const steps = Math.max(50, Math.min(120, Math.round(ms / 16)));
-  const pts = humanPath(sx, sy, tx, ty, steps);
-  const delayUs = Math.round((ms / steps) * 1000); // microseconds for usleep
-
-  // Move cursor through all waypoints in one Swift invocation
-  const moves = pts
-    .map(([x, y]) => `CGWarpMouseCursorPosition(CGPoint(x:${x},y:${y}))\nusleep(${delayUs})`)
-    .join('\n');
-  await swiftRun(`import CoreGraphics\n${moves}\n`, DEFAULT_TIMEOUT_MS);
+  await humanMouseMoveToScreen(tx, ty, ms);
 }
 
 // ─── server ──────────────────────────────────────────────────────────
@@ -590,22 +595,24 @@ app.post(
   },
 );
 
-// POST /click { selector, tab?, human_move?, move_ms? }
+// POST /click { selector?, x?, y?, tab?, human_move?, move_ms? }
+// Requires either selector or both x+y (viewport coordinates).
 app.post(
   '/click',
   {
     schema: {
-      summary: 'Click element matching CSS selector',
+      summary: 'Click element by CSS selector or viewport coordinates',
       body: {
         type: 'object',
-        required: ['selector'],
         properties: {
-          selector: { type: 'string' },
+          selector: { type: 'string', description: 'CSS selector to click' },
+          x: { type: 'number', description: 'Viewport x coordinate to click' },
+          y: { type: 'number', description: 'Viewport y coordinate to click' },
           tab: { type: 'integer', minimum: 1 },
           human_move: {
             type: 'boolean',
             default: false,
-            description: 'Move cursor to element in a human-like path before clicking',
+            description: 'Move cursor to target in a human-like path before clicking',
           },
           move_ms: {
             type: 'integer',
@@ -619,20 +626,40 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { selector, tab, human_move = false, move_ms = 800 } = req.body || {};
-    if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+    const { selector, x, y, tab, human_move = false, move_ms = 800 } = req.body || {};
+    const hasSelector = typeof selector === 'string' && selector.length > 0;
+    const hasCoords = x !== undefined && y !== undefined;
+    if (!hasSelector && !hasCoords)
+      return reply.code(400).send({ error: 'selector or x+y coordinates required' });
     try {
-      if (human_move) await humanMouseMove(selector, tab, move_ms);
-      const js = `(function(){
-      const el=document.querySelector(${JSON.stringify(selector)});
-      if(!el) return JSON.stringify({ok:false,error:'element not found'});
-      el.scrollIntoView({block:'center'}); el.click();
-      return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
-    })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      if (hasSelector) {
+        if (human_move) await humanMouseMove(selector, tab, move_ms);
+        const js = `(function(){
+          const el=document.querySelector(${JSON.stringify(selector)});
+          if(!el) return JSON.stringify({ok:false,error:'element not found'});
+          el.scrollIntoView({block:'center'}); el.click();
+          return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
+        })()`;
+        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      } else {
+        const cx = Number(x), cy = Number(y);
+        if (human_move) {
+          const screenRaw = await chromeEval(`JSON.stringify({
+            x: Math.round(window.screenX + (window.outerWidth - window.innerWidth) / 2 + ${cx}),
+            y: Math.round(window.screenY + (window.outerHeight - window.innerHeight) - (window.outerWidth - window.innerWidth) / 2 + ${cy})
+          })`, DEFAULT_TIMEOUT_MS, tab);
+          const { x: stx, y: sty } = JSON.parse(screenRaw);
+          await humanMouseMoveToScreen(stx, sty, move_ms);
+        }
+        const js = `(function(){
+          const el=document.elementFromPoint(${cx},${cy});
+          if(!el) return JSON.stringify({ok:false,error:'no element at coordinates'});
+          const target=el.closest('a,button,[onclick],[role="button"]')||el;
+          target.click();
+          return JSON.stringify({ok:true,tag:target.tagName,text:target.innerText?.slice(0,80)});
+        })()`;
+        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      }
     } catch (err) {
       return fail(req, reply, err);
     }
