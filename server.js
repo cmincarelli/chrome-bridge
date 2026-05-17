@@ -175,6 +175,23 @@ function humanPath(x0, y0, x1, y1, steps) {
   return pts;
 }
 
+// Runs Swift code from a tempfile — avoids Accessibility permission requirement
+// that System Events needs for cursor control.
+async function swiftRun(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const dir = await mkdtemp(join(tmpdir(), 'chrome-bridge-swift-'));
+  const file = join(dir, 'run.swift');
+  try {
+    await writeFile(file, code, 'utf8');
+    const { stdout } = await exec('swift', [file], {
+      timeout: timeoutMs,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    return stdout.trimEnd();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function humanMouseMove(selector, tab, moveMs = 800) {
   const ms = Math.max(200, Math.min(5000, moveMs));
 
@@ -198,22 +215,25 @@ async function humanMouseMove(selector, tab, moveMs = 800) {
     throw new Error('Could not parse element coordinates from Chrome');
   }
 
-  // Get current cursor position from System Events ("x, y" string)
-  const posRaw = await osa(`tell application "System Events" to get the position of the cursor`);
+  // Get current cursor position via CoreGraphics (no Accessibility permission needed)
+  const posRaw = await swiftRun(
+    'import CoreGraphics\nlet p = CGEvent(source: nil)!.location\nprint("\\(Int(p.x)),\\(Int(p.y))")\n',
+    10_000,
+  );
   const [sx, sy] = posRaw.split(',').map(Number);
-  if (isNaN(sx) || isNaN(sy)) throw new Error('Could not read cursor position from System Events');
+  if (isNaN(sx) || isNaN(sy)) throw new Error('Could not read cursor position');
 
   if (Math.hypot(tx - sx, ty - sy) < 5) return; // already on target
 
   const steps = Math.max(50, Math.min(120, Math.round(ms / 16)));
   const pts = humanPath(sx, sy, tx, ty, steps);
-  const delayS = (ms / steps / 1000).toFixed(4);
+  const delayUs = Math.round((ms / steps) * 1000); // microseconds for usleep
 
+  // Move cursor through all waypoints in one Swift invocation
   const moves = pts
-    .map(([x, y]) => `  set the position of the cursor to {${x}, ${y}}\n  delay ${delayS}`)
+    .map(([x, y]) => `CGWarpMouseCursorPosition(CGPoint(x:${x},y:${y}))\nusleep(${delayUs})`)
     .join('\n');
-
-  await osa(`tell application "System Events"\n${moves}\nend tell`, DEFAULT_TIMEOUT_MS);
+  await swiftRun(`import CoreGraphics\n${moves}\n`, DEFAULT_TIMEOUT_MS);
 }
 
 // ─── server ──────────────────────────────────────────────────────────
