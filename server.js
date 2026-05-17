@@ -175,6 +175,41 @@ function humanPath(x0, y0, x1, y1, steps) {
   return pts;
 }
 
+async function humanMouseMove(selector, tab, moveMs = 800) {
+  const ms = Math.max(200, Math.min(5000, moveMs));
+
+  // Get target element's center in screen (logical) coordinates
+  const coordsRaw = await chromeEval(`(function(){
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return 'null';
+    const r = el.getBoundingClientRect();
+    const vx = window.screenX + (window.outerWidth - window.innerWidth) / 2;
+    const vy = window.screenY + (window.outerHeight - window.innerHeight)
+               - (window.outerWidth - window.innerWidth) / 2;
+    return JSON.stringify({ x: Math.round(vx + r.left + r.width / 2),
+                            y: Math.round(vy + r.top  + r.height / 2) });
+  })()`, DEFAULT_TIMEOUT_MS, tab);
+
+  if (!coordsRaw || coordsRaw === 'null') return; // element not found — caller handles
+  const { x: tx, y: ty } = JSON.parse(coordsRaw);
+
+  // Get current cursor position from System Events ("x, y" string)
+  const posRaw = await osa(`tell application "System Events" to get the position of the cursor`);
+  const [sx, sy] = posRaw.split(',').map(Number);
+
+  if (Math.hypot(tx - sx, ty - sy) < 5) return; // already on target
+
+  const steps = Math.max(50, Math.min(120, Math.round(ms / 16)));
+  const pts = humanPath(sx, sy, tx, ty, steps);
+  const delayS = (ms / steps / 1000).toFixed(4);
+
+  const moves = pts
+    .map(([x, y]) => `  set the position of the cursor to {${x}, ${y}}\n  delay ${delayS}`)
+    .join('\n');
+
+  await osa(`tell application "System Events"\n${moves}\nend tell`, DEFAULT_TIMEOUT_MS);
+}
+
 // ─── server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: true });
 
