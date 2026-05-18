@@ -241,6 +241,69 @@ async function humanMouseMove(selector, tab, moveMs = 800) {
   await humanMouseMoveToScreen(tx, ty, ms);
 }
 
+const OS_KEY_MAP = {
+  Return: 36, Enter: 36,
+  Tab: 48,
+  Space: 49,
+  Backspace: 51, Delete: 51,
+  Escape: 53,
+  ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
+  Home: 115, End: 119, PageUp: 116, PageDown: 121,
+  F1: 122, F2: 120, F3: 99, F4: 118, F5: 96, F6: 97,
+  F7: 98, F8: 100, F9: 101, F10: 109, F11: 103, F12: 111,
+};
+
+async function osTypeText(text, { delayMs = 30, clear = false } = {}) {
+  const delayUs = Math.max(0, Math.min(500_000, Math.round(delayMs * 1000)));
+  const codepoints = [...text].map(c => c.codePointAt(0));
+  const clearLines = clear
+    ? [
+        'let cmdA_d = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)!',
+        'cmdA_d.flags = .maskCommand',
+        'cmdA_d.post(tap: .cghidEventTap)',
+        'let cmdA_u = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)!',
+        'cmdA_u.flags = .maskCommand',
+        'cmdA_u.post(tap: .cghidEventTap)',
+        'usleep(50000)',
+        'let del_d = CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)!',
+        'del_d.post(tap: .cghidEventTap)',
+        'let del_u = CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)!',
+        'del_u.post(tap: .cghidEventTap)',
+        'usleep(50000)',
+      ].join('\n')
+    : '';
+  const swift = `import CoreGraphics
+let src = CGEventSource(stateID: .hidSystemState)
+${clearLines}
+let codepoints: [UInt32] = [${codepoints.join(', ')}]
+for cp in codepoints {
+    guard let scalar = Unicode.Scalar(cp) else { continue }
+    let utf16 = Array(String(scalar).utf16)
+    let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)!
+    down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+    down.post(tap: .cghidEventTap)
+    let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)!
+    up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+    up.post(tap: .cghidEventTap)
+    if ${delayUs} > 0 { usleep(${delayUs}) }
+}
+`;
+  await swiftRun(swift, DEFAULT_TIMEOUT_MS + text.length * delayMs + 5000);
+}
+
+async function osKeyPress(key) {
+  const keyCode = OS_KEY_MAP[key];
+  if (keyCode === undefined) throw new Error(`unknown key: ${key}`);
+  const swift = `import CoreGraphics
+let src = CGEventSource(stateID: .hidSystemState)
+let down = CGEvent(keyboardEventSource: src, virtualKey: ${keyCode}, keyDown: true)!
+down.post(tap: .cghidEventTap)
+let up = CGEvent(keyboardEventSource: src, virtualKey: ${keyCode}, keyDown: false)!
+up.post(tap: .cghidEventTap)
+`;
+  await swiftRun(swift, 10_000);
+}
+
 // ─── server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: true });
 
@@ -702,22 +765,32 @@ app.post(
   },
 );
 
-// POST /type { selector, text, clear?, tab? }
+// POST /type { text, selector?, clear?, delay_ms?, tab? }
 app.post(
   '/type',
   {
     schema: {
-      summary: 'Set value of an input/textarea',
+      summary: 'Type text via OS-level keyboard events',
       body: {
         type: 'object',
-        required: ['selector', 'text'],
+        required: ['text'],
         properties: {
-          selector: { type: 'string' },
           text: { type: 'string' },
+          selector: {
+            type: 'string',
+            description: 'CSS selector to focus before typing (optional)',
+          },
           clear: {
             type: 'boolean',
             default: true,
-            description: 'Clear existing value before typing',
+            description: 'Select all and delete before typing (Cmd+A then Delete)',
+          },
+          delay_ms: {
+            type: 'integer',
+            default: 30,
+            minimum: 0,
+            maximum: 500,
+            description: 'Delay between keystrokes in ms',
           },
           tab: { type: 'integer', minimum: 1 },
         },
@@ -725,25 +798,22 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { selector, text, clear = true, tab } = req.body || {};
-    if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+    const { text, selector, clear = true, delay_ms = 30, tab } = req.body || {};
     if (typeof text !== 'string')
       return reply.code(400).send({ error: 'text must be a string' });
     try {
-      const js = `(function(){
-      const el=document.querySelector(${JSON.stringify(selector)});
-      if(!el) return JSON.stringify({ok:false,error:'element not found'});
-      el.focus();
-      if(${clear}){ el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); }
-      el.value+=${JSON.stringify(text)};
-      el.dispatchEvent(new Event('input',{bubbles:true}));
-      el.dispatchEvent(new Event('change',{bubbles:true}));
-      return JSON.stringify({ok:true,value:el.value.slice(0,80)});
-    })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      if (selector) {
+        const focusJs = `(function(){
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return JSON.stringify({ok:false,error:'element not found'});
+          el.focus();
+          return JSON.stringify({ok:true});
+        })()`;
+        const focusResult = JSON.parse(await chromeEval(focusJs, DEFAULT_TIMEOUT_MS, tab));
+        if (!focusResult.ok) return focusResult;
+      }
+      await osTypeText(text, { delayMs: delay_ms, clear });
+      return { ok: true, chars: text.length };
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -871,17 +941,19 @@ app.post(
   },
 );
 
-// POST /hover { selector, tab?, human_move?, move_ms? }
+// POST /hover { selector?, x?, y?, tab?, human_move?, move_ms? }
+// Requires either selector or both x+y (viewport coordinates).
 app.post(
   '/hover',
   {
     schema: {
-      summary: 'Dispatch mouseover/mouseenter on element',
+      summary: 'Dispatch mouseover/mouseenter by CSS selector or viewport coordinates',
       body: {
         type: 'object',
-        required: ['selector'],
         properties: {
-          selector: { type: 'string' },
+          selector: { type: 'string', description: 'CSS selector to hover' },
+          x: { type: 'number', description: 'Viewport x coordinate' },
+          y: { type: 'number', description: 'Viewport y coordinate' },
           tab: { type: 'integer', minimum: 1 },
           human_move: {
             type: 'boolean',
@@ -900,68 +972,83 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { selector, tab, human_move = false, move_ms = 800 } = req.body || {};
-    if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+    const { selector, x, y, tab, human_move = false, move_ms = 800 } = req.body || {};
+    const hasSelector = typeof selector === 'string' && selector.length > 0;
+    const hasCoords = x !== undefined && y !== undefined;
+    if (!hasSelector && !hasCoords)
+      return reply.code(400).send({ error: 'selector or x+y coordinates required' });
     try {
-      if (human_move) await humanMouseMove(selector, tab, move_ms);
-      const js = `(function(){
-      const el=document.querySelector(${JSON.stringify(selector)});
-      if(!el) return JSON.stringify({ok:false,error:'element not found'});
-      el.scrollIntoView({block:'center'});
-      el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-      el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
-      return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
-    })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      if (hasSelector) {
+        if (human_move) await humanMouseMove(selector, tab, move_ms);
+        const js = `(function(){
+          const el=document.querySelector(${JSON.stringify(selector)});
+          if(!el) return JSON.stringify({ok:false,error:'element not found'});
+          el.scrollIntoView({block:'center'});
+          el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+          el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
+          return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
+        })()`;
+        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      } else {
+        const cx = Number(x), cy = Number(y);
+        if (human_move) {
+          const screenRaw = await chromeEval(`JSON.stringify({
+            x: Math.round(window.screenX + (window.outerWidth - window.innerWidth) / 2 + ${cx}),
+            y: Math.round(window.screenY + (window.outerHeight - window.innerHeight) - (window.outerWidth - window.innerWidth) / 2 + ${cy})
+          })`, DEFAULT_TIMEOUT_MS, tab);
+          const { x: stx, y: sty } = JSON.parse(screenRaw);
+          await humanMouseMoveToScreen(stx, sty, move_ms);
+        }
+        const js = `(function(){
+          const el=document.elementFromPoint(${cx},${cy});
+          if(!el) return JSON.stringify({ok:false,error:'no element at coordinates'});
+          el.scrollIntoView({block:'center'});
+          el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+          el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
+          return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
+        })()`;
+        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      }
     } catch (err) {
       return fail(req, reply, err);
     }
   },
 );
 
-// POST /key { key, selector?, tab? }
-// Key examples: "Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "Backspace"
+// POST /key { key }
+// Supported keys: Enter, Return, Tab, Space, Backspace, Delete, Escape,
+// ArrowLeft, ArrowRight, ArrowDown, ArrowUp, Home, End, PageUp, PageDown,
+// F1–F12
 app.post(
   '/key',
   {
     schema: {
-      summary: 'Dispatch keydown/keyup events',
+      summary: 'Send OS-level key press to frontmost Chrome window',
       body: {
         type: 'object',
         required: ['key'],
         properties: {
           key: {
             type: 'string',
-            description: 'e.g. "Enter", "Tab", "Escape", "ArrowDown"',
+            description:
+              'Key name: "Enter", "Tab", "Escape", "ArrowDown", "Backspace", "F5", etc.',
           },
-          selector: {
-            type: 'string',
-            description: 'Element to dispatch on (default: activeElement)',
-          },
-          tab: { type: 'integer', minimum: 1 },
         },
       },
     },
   },
   async (req, reply) => {
-    const { key, selector, tab } = req.body || {};
+    const { key } = req.body || {};
     if (typeof key !== 'string' || key.length === 0)
       return reply.code(400).send({ error: 'key must be non-empty string' });
     try {
-      const js = `(function(){
-      const target=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.activeElement||document.body`};
-      if(${selector ? '!target' : 'false'}) return JSON.stringify({ok:false,error:'element not found'});
-      if(target&&target!==document.body) target.focus();
-      [new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true}),
-       new KeyboardEvent('keyup',{key:${JSON.stringify(key)},bubbles:true})
-      ].forEach(e=>(target||document).dispatchEvent(e));
-      return JSON.stringify({ok:true,key:${JSON.stringify(key)}});
-    })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      await osKeyPress(key);
+      return { ok: true, key };
     } catch (err) {
+      if (err.message?.startsWith('unknown key:'))
+        return reply
+          .code(400)
+          .send({ error: err.message, supported: Object.keys(OS_KEY_MAP) });
       return fail(req, reply, err);
     }
   },
