@@ -253,6 +253,13 @@ const OS_KEY_MAP = {
   F7: 98, F8: 100, F9: 101, F10: 109, F11: 103, F12: 111,
 };
 
+// Cmd+key shortcuts: key code for the letter, Command modifier applied
+const OS_CMD_KEY_MAP = {
+  SelectAll: 0,  // Cmd+A
+  Copy: 8,       // Cmd+C
+  Paste: 9,      // Cmd+V
+};
+
 async function osTypeText(text, delayMs = 30) {
   const delayUs = Math.max(0, Math.min(500_000, Math.round(delayMs * 1000)));
   const codepoints = [...text].map(c => c.codePointAt(0));
@@ -275,8 +282,22 @@ for cp in codepoints {
 }
 
 async function osKeyPress(key) {
+  if (key in OS_CMD_KEY_MAP) {
+    const keyCode = OS_CMD_KEY_MAP[key];
+    const swift = `import CoreGraphics
+let src = CGEventSource(stateID: .hidSystemState)
+let down = CGEvent(keyboardEventSource: src, virtualKey: ${keyCode}, keyDown: true)!
+down.flags = .maskCommand
+down.post(tap: .cghidEventTap)
+let up = CGEvent(keyboardEventSource: src, virtualKey: ${keyCode}, keyDown: false)!
+up.flags = .maskCommand
+up.post(tap: .cghidEventTap)
+`;
+    return swiftRun(swift, 10_000);
+  }
   const keyCode = OS_KEY_MAP[key];
-  if (keyCode === undefined) throw new Error(`unknown key: ${key}`);
+  if (keyCode === undefined)
+    throw new Error(`unknown key: ${key}`);
   const swift = `import CoreGraphics
 let src = CGEventSource(stateID: .hidSystemState)
 let down = CGEvent(keyboardEventSource: src, virtualKey: ${keyCode}, keyDown: true)!
@@ -1027,7 +1048,7 @@ app.post(
 // POST /key { key }
 // Supported keys: Enter, Return, Tab, Space, Backspace, Delete, Escape,
 // ArrowLeft, ArrowRight, ArrowDown, ArrowUp, Home, End, PageUp, PageDown,
-// F1–F12
+// F1–F12, SelectAll, Copy, Paste
 app.post(
   '/key',
   {
@@ -1040,7 +1061,7 @@ app.post(
           key: {
             type: 'string',
             description:
-              'Key name: "Enter", "Tab", "Escape", "ArrowDown", "Backspace", "F5", etc.',
+              'Key name: "Enter", "Tab", "Escape", "ArrowDown", "Backspace", "F5", "SelectAll", "Copy", "Paste", etc.',
           },
         },
       },
@@ -1057,7 +1078,7 @@ app.post(
       if (err.message?.startsWith('unknown key:'))
         return reply
           .code(400)
-          .send({ error: err.message, supported: Object.keys(OS_KEY_MAP) });
+          .send({ error: err.message, supported: [...Object.keys(OS_KEY_MAP), ...Object.keys(OS_CMD_KEY_MAP)] });
       return fail(req, reply, err);
     }
   },
