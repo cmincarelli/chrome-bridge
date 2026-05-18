@@ -437,6 +437,52 @@ app.post(
   },
 );
 
+// POST /back { tab? }
+app.post(
+  '/back',
+  {
+    schema: {
+      summary: 'Navigate back in browser history',
+      body: {
+        type: 'object',
+        properties: { tab: { type: 'integer', minimum: 1 } },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { tab } = req.body || {};
+    try {
+      await osa(`tell application "${BROWSER}" to go back of ${tabRef(tab)}`);
+      return { ok: true };
+    } catch (err) {
+      return fail(req, reply, err);
+    }
+  },
+);
+
+// POST /forward { tab? }
+app.post(
+  '/forward',
+  {
+    schema: {
+      summary: 'Navigate forward in browser history',
+      body: {
+        type: 'object',
+        properties: { tab: { type: 'integer', minimum: 1 } },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { tab } = req.body || {};
+    try {
+      await osa(`tell application "${BROWSER}" to go forward of ${tabRef(tab)}`);
+      return { ok: true };
+    } catch (err) {
+      return fail(req, reply, err);
+    }
+  },
+);
+
 // GET /ready-state?tab=
 app.get(
   '/ready-state',
