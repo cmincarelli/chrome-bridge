@@ -811,21 +811,17 @@ app.post(
   },
 );
 
-// POST /type { text, selector?, clear?, delay_ms?, tab? }
+// POST /type { text, clear?, delay_ms? }
 app.post(
   '/type',
   {
     schema: {
-      summary: 'Type text via OS-level keyboard events',
+      summary: 'Type text via OS-level keyboard events into the focused element',
       body: {
         type: 'object',
         required: ['text'],
         properties: {
           text: { type: 'string' },
-          selector: {
-            type: 'string',
-            description: 'CSS selector to focus before typing (optional)',
-          },
           clear: {
             type: 'boolean',
             default: true,
@@ -838,26 +834,15 @@ app.post(
             maximum: 500,
             description: 'Delay between keystrokes in ms',
           },
-          tab: { type: 'integer', minimum: 1 },
         },
       },
     },
   },
   async (req, reply) => {
-    const { text, selector, clear = true, delay_ms = 30, tab } = req.body || {};
+    const { text, clear = true, delay_ms = 30 } = req.body || {};
     if (typeof text !== 'string')
       return reply.code(400).send({ error: 'text must be a string' });
     try {
-      if (selector) {
-        const focusJs = `(function(){
-          const el = document.querySelector(${JSON.stringify(selector)});
-          if (!el) return JSON.stringify({ok:false,error:'element not found'});
-          el.focus();
-          return JSON.stringify({ok:true});
-        })()`;
-        const focusResult = JSON.parse(await chromeEval(focusJs, DEFAULT_TIMEOUT_MS, tab));
-        if (!focusResult.ok) return focusResult;
-      }
       await osTypeText(text, { delayMs: delay_ms, clear });
       return { ok: true, chars: text.length };
     } catch (err) {
