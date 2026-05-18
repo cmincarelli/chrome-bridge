@@ -253,29 +253,12 @@ const OS_KEY_MAP = {
   F7: 98, F8: 100, F9: 101, F10: 109, F11: 103, F12: 111,
 };
 
-async function osTypeText(text, { delayMs = 30, clear = false } = {}) {
+async function osTypeText(text, delayMs = 30) {
   const delayUs = Math.max(0, Math.min(500_000, Math.round(delayMs * 1000)));
   const codepoints = [...text].map(c => c.codePointAt(0));
-  const clearLines = clear
-    ? [
-        'let cmdA_d = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)!',
-        'cmdA_d.flags = .maskCommand',
-        'cmdA_d.post(tap: .cghidEventTap)',
-        'let cmdA_u = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)!',
-        'cmdA_u.flags = .maskCommand',
-        'cmdA_u.post(tap: .cghidEventTap)',
-        'usleep(50000)',
-        'let del_d = CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)!',
-        'del_d.post(tap: .cghidEventTap)',
-        'let del_u = CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)!',
-        'del_u.post(tap: .cghidEventTap)',
-        'usleep(50000)',
-      ].join('\n')
-    : '';
   const swift = `import CoreGraphics
-let src = CGEventSource(stateID: .hidSystemState)
-${clearLines}
 let codepoints: [UInt32] = [${codepoints.join(', ')}]
+let src = CGEventSource(stateID: .hidSystemState)
 for cp in codepoints {
     guard let scalar = Unicode.Scalar(cp) else { continue }
     let utf16 = Array(String(scalar).utf16)
@@ -811,7 +794,7 @@ app.post(
   },
 );
 
-// POST /type { text, clear?, delay_ms? }
+// POST /type { text, delay_ms? }
 app.post(
   '/type',
   {
@@ -822,11 +805,6 @@ app.post(
         required: ['text'],
         properties: {
           text: { type: 'string' },
-          clear: {
-            type: 'boolean',
-            default: true,
-            description: 'Select all and delete before typing (Cmd+A then Delete)',
-          },
           delay_ms: {
             type: 'integer',
             default: 30,
@@ -839,11 +817,11 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { text, clear = true, delay_ms = 30 } = req.body || {};
+    const { text, delay_ms = 30 } = req.body || {};
     if (typeof text !== 'string')
       return reply.code(400).send({ error: 'text must be a string' });
     try {
-      await osTypeText(text, { delayMs: delay_ms, clear });
+      await osTypeText(text, delay_ms);
       return { ok: true, chars: text.length };
     } catch (err) {
       return fail(req, reply, err);
