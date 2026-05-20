@@ -1296,6 +1296,54 @@ app.post(
   },
 );
 
+// POST /resize-window { width, height }
+app.post(
+  '/resize-window',
+  {
+    schema: {
+      summary: 'Resize the frontmost browser window (window 1)',
+      body: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: {
+          width: { type: 'integer', minimum: 1, description: 'Target window width in pixels' },
+          height: { type: 'integer', minimum: 1, description: 'Target window height in pixels' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            width: { type: 'integer' },
+            height: { type: 'integer' },
+          },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { width, height } = req.body || {};
+    const w = Number(width);
+    const h = Number(height);
+    if (!Number.isInteger(w) || w < 1 || !Number.isInteger(h) || h < 1)
+      return reply.code(400).send({ error: 'width and height must be positive integers' });
+    try {
+      const boundsRaw = await osa(
+        `tell application "${BROWSER}" to get bounds of window 1`,
+      );
+      // AppleScript returns: "left, top, right, bottom"
+      const [left, top] = boundsRaw.split(',').map(Number);
+      await osa(
+        `tell application "${BROWSER}" to set bounds of window 1 to {${left}, ${top}, ${left + w}, ${top + h}}`,
+      );
+      return { ok: true, width: w, height: h };
+    } catch (err) {
+      return fail(req, reply, err);
+    }
+  },
+);
+
 // GET /screenshot
 app.get(
   '/screenshot',
