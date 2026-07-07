@@ -92,7 +92,7 @@ Quick reference:
 | POST   | `/focus`             | Focus an element                              |
 | POST   | `/type`              | Set value of input/textarea                   |
 | POST   | `/select`            | Set `<select>` value                          |
-| POST   | `/scroll`            | Scroll to coords or scroll element into view  |
+| POST   | `/scroll`            | Scroll to coords (returns `requested`/`actual`/`clamped`) or element into view |
 | POST   | `/scroll-down`       | Scroll down N times (for infinite feeds)     |
 | POST   | `/hover`             | Dispatch `mouseover`/`mouseenter`             |
 | POST   | `/key`               | Dispatch `keydown`/`keyup`                    |

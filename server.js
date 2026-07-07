@@ -1051,11 +1051,16 @@ app.post(
 );
 
 // POST /scroll { x?, y?, selector?, tab? }
+// Coordinate path reports requested-vs-actual position and a `clamped` flag so
+// callers can detect no-op scrolls beyond scrollHeight (issue #3). Selector
+// path reports the actual scroll position snapshot after scrollIntoView.
 app.post(
   '/scroll',
   {
     schema: {
       summary: 'Scroll to coordinates or scroll element into view',
+      description:
+        'Coordinate mode: window.scrollTo(x,y) then returns requested vs actual position with a `clamped` flag (true when the page could not reach the requested coordinates, e.g. target y exceeds scrollHeight). Selector mode: scrolls the element into view and returns the resulting scroll position snapshot.',
       body: {
         type: 'object',
         properties: {
@@ -1076,8 +1081,26 @@ app.post(
             data: {
               type: 'object',
               properties: {
-                x: { type: 'number' },
-                y: { type: 'number' },
+                requested: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number' },
+                    y: { type: 'number' },
+                  },
+                  description: 'Requested target (coordinate mode only)',
+                },
+                actual: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number' },
+                    y: { type: 'number' },
+                  },
+                  description: 'Actual scroll position after the call',
+                },
+                clamped: {
+                  type: 'boolean',
+                  description: 'True when actual != requested (coordinate mode only)',
+                },
               },
             },
           },
@@ -1089,8 +1112,8 @@ app.post(
     const { x = 0, y = 0, selector, tab } = req.body || {};
     try {
       const js = selector
-        ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); if(!el) return JSON.stringify({ok:false,error:'element not found'}); el.scrollIntoView({behavior:'smooth',block:'center'}); return JSON.stringify({ok:true}); })()`
-        : `(function(){ window.scrollTo(${Number(x)},${Number(y)}); return JSON.stringify({ok:true,x:window.scrollX,y:window.scrollY}); })()`;
+        ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); if(!el) return JSON.stringify({ok:false,error:'element not found'}); el.scrollIntoView({behavior:'smooth',block:'center'}); return JSON.stringify({ok:true,actual:{x:window.scrollX,y:window.scrollY}}); })()`
+        : `(function(){ const rx=${Number(x)},ry=${Number(y)}; window.scrollTo(rx,ry); const ax=window.scrollX,ay=window.scrollY; return JSON.stringify({ok:true,requested:{x:rx,y:ry},actual:{x:ax,y:ay},clamped:(ax!==rx||ay!==ry)}); })()`;
       return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
     } catch (err) {
       return fail(req, reply, err);
