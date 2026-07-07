@@ -311,18 +311,41 @@ up.post(tap: .cghidEventTap)
 // ─── server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: true });
 
+// Uniform response envelope. Every route returns { ok: true, data: ... } on
+// success and { ok: false, error: '...', ...extra } on failure. This is the
+// single parse rule for the whole API (see issue #4) and is what makes /eval
+// always return valid JSON regardless of the JS return type (issue #1).
+function ok(data) {
+  return { ok: true, data };
+}
+
+function sendError(reply, status, message, extra) {
+  return reply
+    .code(status)
+    .send({ ok: false, error: message, ...(extra || {}) });
+}
+
+// Convert a JS-computed result ({ ok: bool, ...fields }) into the envelope.
+// ok:false (e.g. "element not found") becomes a 422; ok:true wraps the rest.
+function jsResult(reply, r) {
+  if (r && r.ok === false) {
+    const { ok: _ok, ...extra } = r;
+    return reply.code(422).send({ ok: false, ...extra });
+  }
+  const { ok: _ok, ...data } = r || {};
+  return { ok: true, data };
+}
+
 function fail(req, reply, err) {
   if (err.message?.includes('(-1719)')) {
     req.log.warn({ reqId: req.id }, 'no browser window open');
-    return reply
-      .code(409)
-      .send({
-        error:
-          'no browser window open — call POST /ensure-window or POST /navigate first',
-      });
+    return reply.code(409).send({
+      ok: false,
+      error: 'no browser window open — call POST /ensure-window or POST /navigate first',
+    });
   }
   req.log.error({ err: err.message, stack: err.stack }, 'request failed');
-  return reply.code(500).send({ error: 'internal error' });
+  return reply.code(500).send({ ok: false, error: 'internal error' });
 }
 
 await app.register(cors, { origin: true, methods: ['GET', 'POST', 'OPTIONS'] });
@@ -335,7 +358,7 @@ await app.register(swagger, {
       title: 'chrome-bridge',
       version: '1.0.0',
       description:
-        'HTTP bridge for controlling Chrome on macOS via AppleScript',
+        'HTTP bridge for controlling Chrome on macOS via AppleScript. Every response uses a uniform envelope: { ok: bool, data?: ..., error?: string }.',
     },
     components: {
       securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } },
@@ -354,7 +377,7 @@ app.addHook('preHandler', async (req, reply) => {
   const auth = req.headers.authorization || '';
   const provided = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!tokenMatches(provided))
-    return reply.code(401).send({ error: 'unauthorized' });
+    return reply.code(401).send({ ok: false, error: 'unauthorized' });
 });
 
 // GET /health
@@ -366,12 +389,18 @@ app.get(
       response: {
         200: {
           type: 'object',
-          properties: { ok: { type: 'boolean' }, browser: { type: 'string' } },
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { browser: { type: 'string' } },
+            },
+          },
         },
       },
     },
   },
-  async () => ({ ok: true, browser: BROWSER }),
+  async () => ok({ browser: BROWSER }),
 );
 
 // POST /navigate { url, tab?, wait?, timeout_ms? }
@@ -404,8 +433,13 @@ app.post(
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            state: { type: 'string' },
-            status: { type: 'integer' },
+            data: {
+              type: 'object',
+              properties: {
+                state: { type: 'string' },
+                status: { type: 'integer' },
+              },
+            },
           },
         },
       },
@@ -414,7 +448,7 @@ app.post(
   async (req, reply) => {
     const { url, tab, wait = false, timeout_ms = 30_000 } = req.body || {};
     if (typeof url !== 'string' || !/^https?:\/\//.test(url))
-      return reply.code(400).send({ error: 'url must be http(s) string' });
+      return sendError(reply, 400, 'url must be http(s) string');
     try {
       await chromeNavigate(url, tab);
       if (wait) {
@@ -428,13 +462,13 @@ app.post(
               tab,
             );
             const status = raw ? parseInt(raw, 10) : undefined;
-            return { ok: true, state, ...(status ? { status } : {}) };
+            return ok({ state, ...(status ? { status } : {}) });
           }
           await new Promise((r) => setTimeout(r, 500));
         }
-        return reply.code(408).send({ error: 'timeout waiting for ready' });
+        return sendError(reply, 408, 'timeout waiting for ready');
       }
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -451,13 +485,19 @@ app.post(
         type: 'object',
         properties: { tab: { type: 'integer', minimum: 1 } },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { tab } = req.body || {};
     try {
       await osa(`tell application "${BROWSER}" to go back of ${tabRef(tab)}`);
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -474,13 +514,19 @@ app.post(
         type: 'object',
         properties: { tab: { type: 'integer', minimum: 1 } },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { tab } = req.body || {};
     try {
       await osa(`tell application "${BROWSER}" to go forward of ${tabRef(tab)}`);
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -498,7 +544,16 @@ app.get(
         properties: { tab: { type: 'integer', minimum: 1 } },
       },
       response: {
-        200: { type: 'object', properties: { state: { type: 'string' } } },
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { state: { type: 'string' } },
+            },
+          },
+        },
       },
     },
   },
@@ -506,7 +561,7 @@ app.get(
     const { tab } = req.query || {};
     try {
       const state = await chromeReadyState(tab);
-      return { state };
+      return ok({ state });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -530,7 +585,13 @@ app.post(
       response: {
         200: {
           type: 'object',
-          properties: { ok: { type: 'boolean' }, state: { type: 'string' } },
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { state: { type: 'string' } },
+            },
+          },
         },
       },
     },
@@ -541,12 +602,10 @@ app.post(
     try {
       while (Date.now() < deadline) {
         const state = await chromeReadyState(tab);
-        if (state === 'complete') return { ok: true, state };
+        if (state === 'complete') return ok({ state });
         await new Promise((r) => setTimeout(r, interval_ms));
       }
-      return reply
-        .code(408)
-        .send({ error: 'timeout waiting for ready', state: 'timeout' });
+      return sendError(reply, 408, 'timeout waiting for ready');
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -564,7 +623,16 @@ app.get(
         properties: { tab: { type: 'integer', minimum: 1 } },
       },
       response: {
-        200: { type: 'object', properties: { url: { type: 'string' } } },
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { url: { type: 'string' } },
+            },
+          },
+        },
       },
     },
   },
@@ -574,7 +642,7 @@ app.get(
       const url = await osa(
         `tell application "${BROWSER}" to get URL of ${tabRef(tab)}`,
       );
-      return { url };
+      return ok({ url });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -595,12 +663,18 @@ app.get(
         200: {
           type: 'object',
           properties: {
-            url: { type: 'string' },
-            title: { type: 'string' },
-            scrollY: { type: 'number' },
-            scrollHeight: { type: 'number' },
-            innerHeight: { type: 'number' },
-            tab: {},
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                url: { type: 'string' },
+                title: { type: 'string' },
+                scrollY: { type: 'number' },
+                scrollHeight: { type: 'number' },
+                innerHeight: { type: 'number' },
+                tab: {},
+              },
+            },
           },
         },
       },
@@ -621,14 +695,14 @@ app.get(
         tab,
       );
       const { scrollY, scrollHeight, innerHeight } = JSON.parse(raw);
-      return {
+      return ok({
         url,
         title,
         scrollY,
         scrollHeight,
         innerHeight,
         tab: tab ? Number(tab) : 'active',
-      };
+      });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -646,7 +720,16 @@ app.get(
         properties: { tab: { type: 'integer', minimum: 1 } },
       },
       response: {
-        200: { type: 'object', properties: { text: { type: 'string' } } },
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { text: { type: 'string' } },
+            },
+          },
+        },
       },
     },
   },
@@ -654,7 +737,7 @@ app.get(
     const { tab } = req.query || {};
     try {
       const text = await chromeInnerText(tab);
-      return { text };
+      return ok({ text });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -662,11 +745,17 @@ app.get(
 );
 
 // POST /eval { js, tab?, timeout_ms?, parse_json? }
+// Response is ALWAYS a JSON object: { ok: true, data: <value> }.
+//   parse_json:true  → data is the JSON.parse'd JS return value
+//                     (string/number/array/object — always valid JSON, see #1)
+//   parse_json:false → data is the raw string result from Chrome
 app.post(
   '/eval',
   {
     schema: {
       summary: 'Evaluate arbitrary JavaScript in the tab',
+      description:
+        'Always returns { ok: true, data: <value> }. With parse_json:true (default), data is the JSON-parsed JS return value (any type). With parse_json:false, data is the raw string result.',
       body: {
         type: 'object',
         required: ['js'],
@@ -677,7 +766,20 @@ app.post(
           parse_json: {
             type: 'boolean',
             default: true,
-            description: 'Attempt to JSON.parse the result',
+            description:
+              'Attempt to JSON.parse the result. true → data is the parsed value; false → data is the raw string.',
+          },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              description:
+                'The eval result. Any JSON type when parse_json:true; a string when parse_json:false.',
+            },
           },
         },
       },
@@ -686,22 +788,20 @@ app.post(
   async (req, reply) => {
     const { js, tab, timeout_ms, parse_json = true } = req.body || {};
     if (typeof js !== 'string' || js.length === 0)
-      return reply.code(400).send({ error: 'js must be non-empty string' });
+      return sendError(reply, 400, 'js must be non-empty string');
     try {
+      const raw = parse_json
+        ? await chromeEval(`JSON.stringify(eval(${JSON.stringify(js)}))`, timeout_ms, tab)
+        : await chromeEval(js, timeout_ms, tab);
       if (parse_json) {
-        const wrapped = `JSON.stringify(eval(${JSON.stringify(js)}))`;
-        const raw = await chromeEval(wrapped, timeout_ms, tab);
         try {
-          const parsed = JSON.parse(raw);
-          reply.type('application/json');
-          return parsed;
-        } catch {}
-        reply.type('application/json');
-        return { result: raw };
+          return ok(JSON.parse(raw));
+        } catch {
+          // raw wasn't valid JSON — surface it as a string value
+          return ok(raw);
+        }
       }
-      const raw = await chromeEval(js, timeout_ms, tab);
-      reply.type('application/json');
-      return { result: raw };
+      return ok(raw);
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -736,6 +836,21 @@ app.post(
           },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                tag: { type: 'string' },
+                text: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -743,7 +858,7 @@ app.post(
     const hasSelector = typeof selector === 'string' && selector.length > 0;
     const hasCoords = x !== undefined && y !== undefined;
     if (!hasSelector && !hasCoords)
-      return reply.code(400).send({ error: 'selector or x+y coordinates required' });
+      return sendError(reply, 400, 'selector or x+y coordinates required');
     try {
       if (hasSelector) {
         if (human_move) await humanMouseMove(selector, tab, move_ms);
@@ -753,7 +868,7 @@ app.post(
           el.scrollIntoView({block:'center'}); el.click();
           return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
         })()`;
-        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+        return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
       } else {
         const cx = Number(x), cy = Number(y);
         if (human_move) {
@@ -771,7 +886,7 @@ app.post(
           target.click();
           return JSON.stringify({ok:true,tag:target.tagName,text:target.innerText?.slice(0,80)});
         })()`;
-        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+        return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
       }
     } catch (err) {
       return fail(req, reply, err);
@@ -793,14 +908,27 @@ app.post(
           tab: { type: 'integer', minimum: 1 },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                tag: { type: 'string' },
+                type: { type: 'string', nullable: true },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { selector, tab } = req.body || {};
     if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+      return sendError(reply, 400, 'selector must be non-empty string');
     try {
       const js = `(function(){
       const el=document.querySelector(${JSON.stringify(selector)});
@@ -808,7 +936,7 @@ app.post(
       el.focus(); el.scrollIntoView({block:'center'});
       return JSON.stringify({ok:true,tag:el.tagName,type:el.type||null});
     })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -835,15 +963,27 @@ app.post(
           },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { chars: { type: 'integer' } },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { text, delay_ms = 30 } = req.body || {};
     if (typeof text !== 'string')
-      return reply.code(400).send({ error: 'text must be a string' });
+      return sendError(reply, 400, 'text must be a string');
     try {
       await osTypeText(text, delay_ms);
-      return { ok: true, chars: text.length };
+      return ok({ chars: text.length });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -869,16 +1009,29 @@ app.post(
           tab: { type: 'integer', minimum: 1 },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                selected: { type: 'string' },
+                value: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { selector, value, tab } = req.body || {};
     if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+      return sendError(reply, 400, 'selector must be non-empty string');
     if (typeof value !== 'string')
-      return reply.code(400).send({ error: 'value must be a string' });
+      return sendError(reply, 400, 'value must be a string');
     try {
       const js = `(function(){
       const el=document.querySelector(${JSON.stringify(selector)});
@@ -890,7 +1043,7 @@ app.post(
       el.dispatchEvent(new Event('change',{bubbles:true}));
       return JSON.stringify({ok:true,selected:opt.text.trim(),value:opt.value});
     })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -915,6 +1068,21 @@ app.post(
           tab: { type: 'integer', minimum: 1 },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                x: { type: 'number' },
+                y: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -923,7 +1091,7 @@ app.post(
       const js = selector
         ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); if(!el) return JSON.stringify({ok:false,error:'element not found'}); el.scrollIntoView({behavior:'smooth',block:'center'}); return JSON.stringify({ok:true}); })()`
         : `(function(){ window.scrollTo(${Number(x)},${Number(y)}); return JSON.stringify({ok:true,x:window.scrollX,y:window.scrollY}); })()`;
-      return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+      return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -945,6 +1113,30 @@ app.post(
           tab: { type: 'integer', minimum: 1 },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                steps: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      step: { type: 'integer' },
+                      y: { type: 'number' },
+                    },
+                  },
+                },
+                finalY: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -964,7 +1156,7 @@ app.post(
         steps.push({ step: i + 1, y });
         if (i < count - 1) await new Promise((r) => setTimeout(r, delay));
       }
-      return { ok: true, steps, finalY: steps[steps.length - 1]?.y };
+      return ok({ steps, finalY: steps[steps.length - 1]?.y });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -999,6 +1191,21 @@ app.post(
           },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                tag: { type: 'string' },
+                text: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -1006,7 +1213,7 @@ app.post(
     const hasSelector = typeof selector === 'string' && selector.length > 0;
     const hasCoords = x !== undefined && y !== undefined;
     if (!hasSelector && !hasCoords)
-      return reply.code(400).send({ error: 'selector or x+y coordinates required' });
+      return sendError(reply, 400, 'selector or x+y coordinates required');
     try {
       if (hasSelector) {
         if (human_move) await humanMouseMove(selector, tab, move_ms);
@@ -1018,7 +1225,7 @@ app.post(
           el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
           return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
         })()`;
-        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+        return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
       } else {
         const cx = Number(x), cy = Number(y);
         if (human_move) {
@@ -1037,7 +1244,7 @@ app.post(
           el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
           return JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)});
         })()`;
-        return JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab));
+        return jsResult(reply, JSON.parse(await chromeEval(js, DEFAULT_TIMEOUT_MS, tab)));
       }
     } catch (err) {
       return fail(req, reply, err);
@@ -1065,20 +1272,32 @@ app.post(
           },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { key: { type: 'string' } },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { key } = req.body || {};
     if (typeof key !== 'string' || key.length === 0)
-      return reply.code(400).send({ error: 'key must be non-empty string' });
+      return sendError(reply, 400, 'key must be non-empty string');
     try {
       await osKeyPress(key);
-      return { ok: true, key };
+      return ok({ key });
     } catch (err) {
       if (err.message?.startsWith('unknown key:'))
-        return reply
-          .code(400)
-          .send({ error: err.message, supported: [...Object.keys(OS_KEY_MAP), ...Object.keys(OS_CMD_KEY_MAP)] });
+        return sendError(reply, 400, err.message, {
+          supported: [...Object.keys(OS_KEY_MAP), ...Object.keys(OS_CMD_KEY_MAP)],
+        });
       return fail(req, reply, err);
     }
   },
@@ -1103,7 +1322,13 @@ app.post(
       response: {
         200: {
           type: 'object',
-          properties: { html: { type: 'string', nullable: true } },
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { html: { type: 'string', nullable: true } },
+            },
+          },
         },
       },
     },
@@ -1115,7 +1340,7 @@ app.post(
         ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); return el ? el.outerHTML : null; })()`
         : `document.body.innerHTML`;
       const raw = await chromeEval(js, 60_000, tab);
-      return { html: raw };
+      return ok({ html: raw });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1138,6 +1363,21 @@ app.post(
           interval_ms: { type: 'integer', default: 500 },
         },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                tag: { type: 'string' },
+                text: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -1148,20 +1388,16 @@ app.post(
       interval_ms = 500,
     } = req.body || {};
     if (typeof selector !== 'string' || selector.length === 0)
-      return reply
-        .code(400)
-        .send({ error: 'selector must be non-empty string' });
+      return sendError(reply, 400, 'selector must be non-empty string');
     const deadline = Date.now() + timeout_ms;
     try {
       while (Date.now() < deadline) {
-        const js = `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); return el ? JSON.stringify({found:true,tag:el.tagName,text:el.innerText?.slice(0,80)}) : 'null'; })()`;
+        const js = `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); return el ? JSON.stringify({ok:true,tag:el.tagName,text:el.innerText?.slice(0,80)}) : 'null'; })()`;
         const raw = await chromeEval(js, DEFAULT_TIMEOUT_MS, tab);
-        if (raw && raw !== 'null') return JSON.parse(raw);
+        if (raw && raw !== 'null') return jsResult(reply, JSON.parse(raw));
         await new Promise((r) => setTimeout(r, interval_ms));
       }
-      return reply
-        .code(408)
-        .send({ error: 'timeout waiting for selector', selector });
+      return sendError(reply, 408, 'timeout waiting for selector', { selector });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1178,15 +1414,21 @@ app.get(
         200: {
           type: 'object',
           properties: {
-            tabs: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  window: { type: 'integer' },
-                  tab: { type: 'integer' },
-                  url: { type: 'string' },
-                  title: { type: 'string' },
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                tabs: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      window: { type: 'integer' },
+                      tab: { type: 'integer' },
+                      url: { type: 'string' },
+                      title: { type: 'string' },
+                    },
+                  },
                 },
               },
             },
@@ -1218,7 +1460,7 @@ app.get(
           tabs.push({ window: w, tab: t, url, title });
         }
       }
-      return { tabs };
+      return ok({ tabs });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1232,6 +1474,12 @@ app.post(
     schema: {
       summary: 'Open a new tab, optionally navigating to URL',
       body: { type: 'object', properties: { url: { type: 'string' } } },
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
     },
   },
   async (req, reply) => {
@@ -1241,7 +1489,7 @@ app.post(
         `tell application "${BROWSER}" to tell window 1 to make new tab`,
       );
       if (url && /^https?:\/\//.test(url)) await chromeNavigate(url);
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1259,19 +1507,23 @@ app.post(
         required: ['index'],
         properties: { index: { type: 'integer', minimum: 1 } },
       },
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
     },
   },
   async (req, reply) => {
     const { index } = req.body || {};
     if (!Number.isInteger(Number(index)) || Number(index) < 1)
-      return reply
-        .code(400)
-        .send({ error: 'index must be a positive integer' });
+      return sendError(reply, 400, 'index must be a positive integer');
     try {
       await osa(
         `tell application "${BROWSER}" to set active tab index of window 1 to ${Number(index)}`,
       );
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1284,12 +1536,18 @@ app.post(
   {
     schema: {
       summary: 'Activate browser and ensure at least one window/tab exists',
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
     },
   },
   async (req, reply) => {
     try {
       await ensureWindow();
-      return { ok: true };
+      return ok({});
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1315,8 +1573,13 @@ app.post(
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            width: { type: 'integer' },
-            height: { type: 'integer' },
+            data: {
+              type: 'object',
+              properties: {
+                width: { type: 'integer' },
+                height: { type: 'integer' },
+              },
+            },
           },
         },
       },
@@ -1327,7 +1590,7 @@ app.post(
     const w = Number(width);
     const h = Number(height);
     if (!Number.isInteger(w) || w < 1 || !Number.isInteger(h) || h < 1)
-      return reply.code(400).send({ error: 'width and height must be positive integers' });
+      return sendError(reply, 400, 'width and height must be positive integers');
     try {
       const boundsRaw = await osa(
         `tell application "${BROWSER}" to get bounds of window 1`,
@@ -1337,7 +1600,7 @@ app.post(
       await osa(
         `tell application "${BROWSER}" to set bounds of window 1 to {${left}, ${top}, ${left + w}, ${top + h}}`,
       );
-      return { ok: true, width: w, height: h };
+      return ok({ width: w, height: h });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1354,11 +1617,17 @@ app.get(
         200: {
           type: 'object',
           properties: {
-            mime: { type: 'string' },
-            width: { type: 'integer' },
-            height: { type: 'integer' },
-            dpr: { type: 'number' },
-            image: { type: 'string', description: 'Base64-encoded PNG' },
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                mime: { type: 'string' },
+                width: { type: 'integer' },
+                height: { type: 'integer' },
+                dpr: { type: 'number' },
+                image: { type: 'string', description: 'Base64-encoded PNG' },
+              },
+            },
           },
         },
       },
@@ -1367,7 +1636,7 @@ app.get(
   async (req, reply) => {
     try {
       const { base64, width, height, dpr } = await screenshotViewport();
-      return { mime: 'image/png', width, height, dpr, image: base64 };
+      return ok({ mime: 'image/png', width, height, dpr, image: base64 });
     } catch (err) {
       return fail(req, reply, err);
     }
@@ -1377,6 +1646,12 @@ app.get(
 // POST /batch { pauseBetween?, batch: [{ func, method?, data? }, ...] }
 // Runs a sequence of internal endpoint calls. Method defaults to POST if data
 // is provided, GET otherwise. The caller's Authorization header is forwarded.
+//
+// Response: { ok: true, data: { results: [...] } }. Each result describes one
+// step: { ok: <http success>, status, body } on success, or { ok: false,
+// error } on internal failure. Note the result's `ok` reflects whether the
+// internal HTTP call succeeded (status < 400); the inner `body` is itself an
+// enveloped response ({ ok, data } or { ok:false, error }).
 app.post(
   '/batch',
   {
@@ -1421,15 +1696,21 @@ app.post(
         200: {
           type: 'object',
           properties: {
-            results: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  ok: { type: 'boolean' },
-                  status: { type: 'integer' },
-                  body: {},
-                  error: { type: 'string' },
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                results: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean' },
+                      status: { type: 'integer' },
+                      body: {},
+                      error: { type: 'string' },
+                    },
+                  },
                 },
               },
             },
@@ -1441,7 +1722,7 @@ app.post(
   async (req, reply) => {
     const { pauseBetween = 0, batch } = req.body || {};
     if (!Array.isArray(batch))
-      return reply.code(400).send({ error: 'batch must be an array' });
+      return sendError(reply, 400, 'batch must be an array');
 
     const results = [];
     const auth = req.headers.authorization;
@@ -1494,7 +1775,7 @@ app.post(
       }
     }
 
-    return { results };
+    return ok({ results });
   },
 );
 

@@ -45,20 +45,40 @@ prevents AppleScript injection through this path. Multi-window writes are not
 supported — `/new-tab`, `/switch-tab`, etc. always target window 1. `/tabs`
 walks every window for reads.
 
+### Response envelope
+
+Every route returns a uniform envelope via the `ok(data)` / `sendError()` /
+`jsResult()` helpers: `{ ok: true, data: ... }` on success (200),
+`{ ok: false, error: '...', ...extra }` on failure (4xx/5xx). `fail()` is the
+catch-all for thrown errors and always returns `{ ok: false, error: 'internal error' }`
+(with a 409 special-case for the AppleScript `-1719` "no window" error). Don't
+surface `err.message` to clients.
+
+JS-computed endpoints (`/click`, `/focus`, `/select`, `/scroll`, `/hover`,
+`/wait-for-selector`) return `{ ok, ...fields }` from the page; `jsResult()` turns
+an inner `ok:false` (e.g. "element not found") into a 422 and wraps the rest in
+`data`. `/eval` is special: `data` is the JS return value itself (any type), so
+the response is always valid JSON regardless of return type.
+
 ### `/batch`
 
 `POST /batch` runs a sequence of internal endpoint calls via `app.inject()`.
 Each step goes through the full request lifecycle (auth, rate-limit, schema
 validation, `fail()`), so don't add bypass logic — forwarding the caller's
 `Authorization` header is sufficient. Method defaults to `POST` if `data` is
-present, else `GET`. Recursive `/batch` calls are rejected.
+present, else `GET`. Recursive `/batch` calls are rejected. The response is
+`{ ok: true, data: { results: [...] } }`; each result's `ok` reflects HTTP
+success (status < 400) and its `body` is the inner endpoint's enveloped response.
 
 ## Conventions
 
 - **All user input that lands in AppleScript must go through `asString()`,
   `Number()`, or `JSON.stringify()`.** AppleScript injection is the main attack
   surface; the helpers exist for this reason.
-- **Errors return `{ error: 'internal error' }` via `fail()`.** Do not surface
+- **Every response uses the uniform envelope** `{ ok: bool, data?|error? }` via
+  the `ok()` / `sendError()` / `jsResult()` helpers. Don't return bare values or
+  ad-hoc shapes from route handlers.
+- **Errors return `{ ok: false, error: 'internal error' }` via `fail()`.** Do not surface
   `err.message` to clients — it leaks stderr/paths/internal state.
 - **Every route declares a `schema`.** This is what populates Swagger UI at
   `/docs`. New routes without schemas are visible but un-documented.
@@ -70,6 +90,4 @@ present, else `GET`. Recursive `/batch` calls are rejected.
 
 - `BRIDGE_TOKEN` is effectively a root password for the user's Chrome session
   (since `/eval` runs arbitrary JS there). Treat it accordingly.
-- `HOST` is whatever the user sets in `.env`. `127.0.0.1` is the safe default;
-  a Tailscale IP scopes access to the tailnet; `0.0.0.0` exposes on every
-  interface including public Wi-Fi. Don't change the default for them.
+- `HOST` defaults to `0.0.0.0` when unset (in `server.js`), chosen so the bridge is reachable over Tailscale and other local machines — don't change this. `127.0.0.1` scopes to localhost; a specific Tailscale IP scopes to the tailnet. Since `/eval` runs arbitrary JS in the logged-in Chrome session, treat the token as a root password and rotate it if it ever leaks.

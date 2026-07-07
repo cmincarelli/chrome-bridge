@@ -36,20 +36,23 @@ All via `.env`:
 | Var            | Default          | Notes                                                        |
 | -------------- | ---------------- | ------------------------------------------------------------ |
 | `PORT`         | `8765`           |                                                              |
-| `HOST`         | `127.0.0.1`      | Bind address. See **Network exposure** below.                |
+| `HOST`         | `0.0.0.0`         | Bind address. `0.0.0.0` exposes on every interface (reachable via Tailscale and other local machines); `127.0.0.1` limits to localhost; a Tailscale IP scopes to the tailnet. |
 | `BROWSER`      | `Google Chrome`  | App name passed to AppleScript (`tell application "..."`).   |
 | `BRIDGE_TOKEN` | *(required)*     | Bearer token. Generate with `openssl rand -hex 32`.          |
 
 ### Network exposure
 
-`HOST` controls which network interfaces the server listens on:
+`HOST` controls which network interfaces the server listens on. The default is
+`0.0.0.0`, chosen so the bridge is reachable over Tailscale and other local
+machines:
 
-- `127.0.0.1` — localhost only (safest).
+- `0.0.0.0` — every interface (Tailscale + LAN; **this is the intended default**).
 - *(your Tailscale IP)* — reachable from your tailnet only.
-- `0.0.0.0` — every interface, including public Wi-Fi. Don't.
+- `127.0.0.1` — localhost only.
 
 Because `/eval` runs arbitrary JavaScript in your logged-in Chrome session,
-treat the bearer token like a root password.
+treat the bearer token like a root password and rotate it (`openssl rand -hex 32`)
+if it ever leaks.
 
 ## API
 
@@ -57,6 +60,21 @@ Interactive docs at **`http://<host>:<port>/docs`** (Swagger UI, no auth require
 for the docs themselves).
 
 All other endpoints require `Authorization: Bearer <BRIDGE_TOKEN>`.
+
+### Response envelope
+
+Every endpoint uses a single uniform envelope — one parse rule for the whole API:
+
+```jsonc
+// success
+{ "ok": true, "data": { ...endpoint-specific... } }
+// error (any non-200 status)
+{ "ok": false, "error": "...", ...optionalExtras }
+```
+
+For `POST /eval`, `data` is the JavaScript return value itself — a string, number,
+array, or object — so the response is always valid JSON even when the JS returns
+a bare string. With `parse_json:false`, `data` is the raw string result.
 
 Quick reference:
 
@@ -100,18 +118,20 @@ curl -sX POST "$URL/navigate" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com","wait":true}'
-# → {"ok":true,"state":"complete","status":200}
+# → {"ok":true,"data":{"state":"complete","status":200}}
 
 # Collect every link on the page
 curl -sX POST "$URL/eval" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"js":"JSON.stringify([...document.querySelectorAll(\"a\")].map(a=>a.href))"}'
+# → {"ok":true,"data":["https://example.com/","https://example.com/about",...]}
+# (parse_json:true JSON.parses the JS return value into `data`)
 
 # Screenshot the viewport
 curl -s "$URL/screenshot" \
   -H "Authorization: Bearer $TOKEN" \
-  | jq -r .image | base64 -d > /tmp/page.png
+  | jq -r '.data.image' | base64 -d > /tmp/page.png
 
 # Batch: navigate, wait, scroll, screenshot — with a 300ms pause between steps
 curl -sX POST "$URL/batch" \
