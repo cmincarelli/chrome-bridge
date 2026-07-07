@@ -101,6 +101,7 @@ Quick reference:
 | GET    | `/tabs`              | List all tabs across all windows              |
 | POST   | `/new-tab`           | Open a new tab                                |
 | POST   | `/switch-tab`        | Activate a tab in window 1 by index           |
+| POST   | `/close-tab`         | Close a tab in window 1 by index (default: active) |
 | POST   | `/ensure-window`     | Activate Chrome, create window/tab if needed |
 | GET    | `/screenshot`        | PNG of the viewport, base64-encoded           |
 | POST   | `/batch`             | Run a sequence of endpoint calls with pause   |

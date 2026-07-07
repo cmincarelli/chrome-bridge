@@ -366,6 +366,18 @@ class Tools:
             self._request("POST", "/switch-tab", json={"index": index})
         )
 
+    def close_tab(
+        self,
+        tab: Annotated[
+            int,
+            Field(description="1-based index of the tab to close in window 1 (omit to close the active tab)."),
+        ] = None,
+    ) -> str:
+        """Close a tab in window 1 by 1-based index. Omit `tab` to close the active tab.
+        Closing the last tab of a window also closes the window (Chrome default)."""
+        body = {"tab": tab} if tab is not None else {}
+        return json.dumps(self._request("POST", "/close-tab", json=body))
+
     def ensure_window(self) -> str:
         """Activate Chrome and ensure at least one window/tab exists."""
         return json.dumps(self._request("POST", "/ensure-window"))

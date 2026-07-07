@@ -1553,6 +1553,55 @@ app.post(
   },
 );
 
+// POST /close-tab { tab? }
+// Closes a tab in window 1 by 1-based index (default: active tab). Closing the
+// last tab of a window also closes the window (Chrome's default behavior).
+//
+// Chrome throws the same AppleScript error (-1719) for "no window" and for a
+// bad tab index, so for an explicit index we validate against the live tab
+// count first to distinguish 422 (tab not found) from 409 (no window).
+app.post(
+  '/close-tab',
+  {
+    schema: {
+      summary: 'Close a tab in window 1 by 1-based index (default: active tab)',
+      body: {
+        type: 'object',
+        properties: {
+          tab: {
+            type: 'integer',
+            minimum: 1,
+            description: '1-based tab index in window 1 (default: active tab)',
+          },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, data: { type: 'object' } },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { tab } = req.body || {};
+    try {
+      if (tab !== undefined) {
+        const idx = Number(tab);
+        const count = Number(
+          await osa(`tell application "${BROWSER}" to count of tabs of window 1`),
+        );
+        if (idx > count)
+          return sendError(reply, 422, 'tab not found', { tab: idx, tabs: count });
+      }
+      await osa(`tell application "${BROWSER}" to close ${tabRef(tab)}`);
+      return ok({});
+    } catch (err) {
+      return fail(req, reply, err);
+    }
+  },
+);
+
 // POST /ensure-window
 app.post(
   '/ensure-window',
