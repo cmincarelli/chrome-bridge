@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
-import { asString, tabRef, defaultPort, urlsMatch, humanPath } from './lib.js';
+import { asString, tabRef, defaultPort, urlsMatch, humanPath,
+         VIEWPORT_ORIGIN_FIELDS_JS, viewportToScreenExpr } from './lib.js';
 
 const exec = promisify(execFile);
 
@@ -185,15 +186,10 @@ async function chromeInnerText(tab) {
 }
 
 async function screenshotViewport() {
-  const boundsScript = `
-    JSON.stringify({
-      x: window.screenX + (window.outerWidth - window.innerWidth) / 2,
-      y: window.screenY + (window.outerHeight - window.innerHeight) - ((window.outerWidth - window.innerWidth) / 2),
-      w: window.innerWidth,
-      h: window.innerHeight,
-      dpr: window.devicePixelRatio || 1
-    })
-  `;
+  const boundsScript = `JSON.stringify({
+    ...${VIEWPORT_ORIGIN_FIELDS_JS},
+    w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1
+  })`;
   const boundsRaw = await chromeEval(boundsScript);
   const { x, y, w, h, dpr } = JSON.parse(boundsRaw);
 
@@ -304,11 +300,9 @@ async function humanMouseMove(selector, tab, moveMs = 800) {
     const el = document.querySelector(${JSON.stringify(selector)});
     if (!el) return 'null';
     const r = el.getBoundingClientRect();
-    const vx = window.screenX + (window.outerWidth - window.innerWidth) / 2;
-    const vy = window.screenY + (window.outerHeight - window.innerHeight)
-               - (window.outerWidth - window.innerWidth) / 2;
-    return JSON.stringify({ x: Math.round(vx + r.left + r.width / 2),
-                            y: Math.round(vy + r.top  + r.height / 2) });
+    const o = ${VIEWPORT_ORIGIN_FIELDS_JS};
+    return JSON.stringify({ x: Math.round(o.x + r.left + r.width / 2),
+                            y: Math.round(o.y + r.top  + r.height / 2) });
   })()`, DEFAULT_TIMEOUT_MS, tab);
 
   if (!coordsRaw || coordsRaw === 'null') return; // element not found — caller handles
@@ -969,10 +963,7 @@ app.post(
       } else {
         const cx = Number(x), cy = Number(y);
         if (human_move) {
-          const screenRaw = await chromeEval(`JSON.stringify({
-            x: Math.round(window.screenX + (window.outerWidth - window.innerWidth) / 2 + ${cx}),
-            y: Math.round(window.screenY + (window.outerHeight - window.innerHeight) - (window.outerWidth - window.innerWidth) / 2 + ${cy})
-          })`, DEFAULT_TIMEOUT_MS, tab);
+          const screenRaw = await chromeEval(viewportToScreenExpr(cx, cy), DEFAULT_TIMEOUT_MS, tab);
           const { x: stx, y: sty } = JSON.parse(screenRaw);
           await humanMouseMoveToScreen(stx, sty, move_ms);
         }
@@ -1349,10 +1340,7 @@ app.post(
       } else {
         const cx = Number(x), cy = Number(y);
         if (human_move) {
-          const screenRaw = await chromeEval(`JSON.stringify({
-            x: Math.round(window.screenX + (window.outerWidth - window.innerWidth) / 2 + ${cx}),
-            y: Math.round(window.screenY + (window.outerHeight - window.innerHeight) - (window.outerWidth - window.innerWidth) / 2 + ${cy})
-          })`, DEFAULT_TIMEOUT_MS, tab);
+          const screenRaw = await chromeEval(viewportToScreenExpr(cx, cy), DEFAULT_TIMEOUT_MS, tab);
           const { x: stx, y: sty } = JSON.parse(screenRaw);
           await humanMouseMoveToScreen(stx, sty, move_ms);
         }

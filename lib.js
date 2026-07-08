@@ -58,3 +58,20 @@ export function humanPath(x0, y0, x1, y1, steps) {
   }
   return pts;
 }
+
+// JS object expression (runs in the page) for the viewport top-left in screen
+// coords. Single source of truth for the Chrome viewport→screen offset; injected
+// into chromeEval scripts by screenshotViewport (spread), humanMouseMove (.x/.y),
+// and via viewportToScreenExpr by /click and /hover. NOT a JSON string — it's an
+// object-expression so callers can spread or read fields.
+export const VIEWPORT_ORIGIN_FIELDS_JS = `{
+  x: window.screenX + (window.outerWidth - window.innerWidth) / 2,
+  y: window.screenY + (window.outerHeight - window.innerHeight) - ((window.outerWidth - window.innerWidth) / 2)
+}`;
+
+// Build the page JS for "origin + (cx, cy)" → { x, y } in screen coords.
+// cx/cy are viewport coordinates (Node-side numbers). Returns a JS expression
+// string that JSON.stringify's the result (so chromeEval gets a string back).
+export function viewportToScreenExpr(cx, cy) {
+  return `JSON.stringify({ x: Math.round((${VIEWPORT_ORIGIN_FIELDS_JS}).x + ${Number(cx)}), y: Math.round((${VIEWPORT_ORIGIN_FIELDS_JS}).y + ${Number(cy)}) })`;
+}

@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { asString, defaultPort, humanPath, tabRef, urlsMatch } from "../lib.js";
+import {
+  VIEWPORT_ORIGIN_FIELDS_JS,
+  asString,
+  defaultPort,
+  humanPath,
+  tabRef,
+  urlsMatch,
+  viewportToScreenExpr,
+} from "../lib.js";
 
 test("asString escapes AppleScript-sensitive characters", () => {
   assert.equal(asString('a\\b"c'), 'a\\\\b\\"c');
@@ -58,4 +66,35 @@ test("humanPath returns structured point arrays with stable endpoints", () => {
   assert.equal(samePoint.length, 4);
   assert.deepEqual(samePoint[0], [5, 5]);
   assert.deepEqual(samePoint.at(-1), [5, 5]);
+});
+
+test("viewportToScreenExpr builds a self-contained screen coordinate expression", () => {
+  const expr = viewportToScreenExpr(100, 200);
+  assert.match(expr, /Math\.round\(/);
+  assert.match(expr, /window\.screenX/);
+  assert.match(expr, /window\.outerWidth/);
+  assert.match(expr, /\+ 100/);
+  assert.match(expr, /\+ 200/);
+});
+
+test("viewportToScreenExpr preserves zero coordinates", () => {
+  const expr = viewportToScreenExpr(0, 0);
+  assert.match(expr, /\+ 0/);
+  assert.equal((expr.match(/\+ 0/g) || []).length, 2);
+});
+
+test("viewportToScreenExpr coerces numeric strings", () => {
+  const expr = viewportToScreenExpr("50", "60");
+  assert.match(expr, /\+ 50/);
+  assert.match(expr, /\+ 60/);
+});
+
+test("VIEWPORT_ORIGIN_FIELDS_JS contains the viewport origin formula", () => {
+  assert.match(VIEWPORT_ORIGIN_FIELDS_JS, /window\.screenX/);
+  assert.match(VIEWPORT_ORIGIN_FIELDS_JS, /window\.outerWidth - window\.innerWidth/);
+  assert.match(VIEWPORT_ORIGIN_FIELDS_JS, /window\.outerHeight - window\.innerHeight/);
+});
+
+test("VIEWPORT_ORIGIN_FIELDS_JS is an object expression", () => {
+  assert.doesNotMatch(VIEWPORT_ORIGIN_FIELDS_JS, /JSON\.stringify/);
 });
