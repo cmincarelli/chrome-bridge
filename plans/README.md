@@ -31,6 +31,13 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 ## Findings considered and rejected
 
+- **`POST /request` endpoint (DIR-1)**: REJECTED. `/eval` already covers the
+  `fetch()`-with-cookies use case; `mode: "browser"` (form navigation) is
+  brittle and can't set custom headers; `wait:false` + a page-stored request
+  store is a lifecycle rabbit hole that likely killed the prior uncommitted
+  attempt (the spec's stale "current implementation note" referenced code that
+  never existed in git). Not worth re-attempting without a concrete `/eval`-can't-do-this need. Full rationale in the Direction section below.
+
 - **`/tabs` O(windows×tabs) sequential `osa` calls (P-1)**: not worth a dedicated
   plan now — `/tabs` is a low-frequency read (tab listing), not a hot path, and
   batching the AppleScript into one `execute javascript`/multi-get would trade
@@ -60,15 +67,32 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   already covered in `docs/superpowers/specs/2026-05-17-human-mouse-move-design.md`;
   not a code-debt finding.
 
-## Direction (not planned yet — options for the maintainer)
+## Direction (considered, not pursued)
 
-- **DIR-1: `POST /request` endpoint** — full spec exists at
-  `docs/request-endpoint.md` + `docs/superpowers/specs/2026-06-02-request-endpoint-design.md`
-  (a "low-level browser-request primitive" issuing `fetch()` from the tab with
-  method/headers/body, capturing the response; fills the gap that `/navigate`
-  only does GET). Designed 2026-06-02, never shipped. L effort; high product
-  value. Would be a design/spike plan (confirm API, prototype, list open
-  questions). Say the word to write `006-request-endpoint-spike.md`.
+- **DIR-1: `POST /request` endpoint — REJECTED.** A full spec exists at
+  `docs/superpowers/specs/2026-06-02-request-endpoint-design.md` (a "low-level
+  browser-request primitive" issuing `fetch()` from the tab). **Rejected, not
+  deferred,** with rationale so it isn't re-audited next run:
+  - **`/eval` already covers the real use case.** `/eval` runs `fetch()` in the
+    signed-in Chrome session with cookies/origin today; `mode: "javascript"`
+    is a convenience wrapper over it, not a new capability.
+  - **`mode: "browser"` (form-submit navigation) is brittle + low-value.**
+    Forms can't set custom headers (can't reach most JSON APIs), nested bodies
+    become `[object Object]`, and it's strictly less capable than `fetch` —
+    its only unique behavior is navigating the tab to the response page.
+  - **`wait:false` + `window.__chromeBridgeRequests[id]` is a rabbit hole** —
+    fire-and-forget immediately begs for a retrieve/cancel/stream lifecycle
+    API, which is a project, not a feature. This is almost certainly where the
+    prior attempt stalled (see below).
+  - **Prior attempt abandoned uncommitted.** Git history has zero commits for a
+    `/request` route, yet the spec's original "current implementation note"
+    referenced `window.__chromeBridgeRequests[id]` — the kind of detail written
+    only after prototyping. Someone prototyped `wait:false`, hit the lifecycle
+    dead-end, and threw it out without committing. **Don't repeat it.**
+  If a concrete caller need ever appears that `/eval` genuinely can't meet
+  (e.g., "the tab must navigate to a POST response page"), scope a **spike of
+  `mode: "javascript"` with `wait:true` only** — drop `browser` mode, `wait:false`,
+  and the request store entirely. Until then, leave it.
 
-- **DIR-2: Skip auth on loopback bind** — **planned as 006** (see `plans/006-skip-auth-on-loopback.md`).
+- **DIR-2: Skip auth on loopback bind** — **DONE as 006** (merged `89f594c`).
   When `HOST` is loopback, skip the `BRIDGE_TOKEN` check (the only network caller is the same machine).
