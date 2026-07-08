@@ -166,6 +166,14 @@ curl -sX POST "$URL/batch" \
 
 If `BRIDGE_TOKEN` ever leaks, rotate it immediately and restart the server.
 
+## Transport security
+
+The bearer token is sent on every request. By default the bridge serves plain
+HTTP, so the token travels in cleartext — safe over Tailscale or on `127.0.0.1`,
+but sniffable on shared networks. To enable HTTPS, set `TLS_CERT` and `TLS_KEY`
+to PEM file paths (see `.env.example` for a self-signed-cert one-liner). The
+server warns at startup if it's serving cleartext on a non-loopback bind.
+
 ## Limitations
 
 - macOS only. AppleScript-based; won't run on Linux or Windows.

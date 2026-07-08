@@ -6,6 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import cors from '@fastify/cors';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -21,6 +22,16 @@ const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.BRIDGE_TOKEN;
 const BROWSER = process.env.BROWSER || 'Google Chrome';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const TLS_CERT = process.env.TLS_CERT; // path to PEM cert file
+const TLS_KEY = process.env.TLS_KEY;   // path to PEM key file
+const USE_TLS = Boolean(TLS_CERT && TLS_KEY);
+// Fail fast if only one of TLS_CERT/TLS_KEY is set (otherwise USE_TLS would
+// silently be false and the server would serve cleartext HTTP while the
+// operator thinks TLS is on).
+if (Boolean(TLS_CERT) !== Boolean(TLS_KEY)) {
+  console.error('FATAL: TLS_CERT and TLS_KEY must be set together (both PEM file paths, or neither)');
+  process.exit(1);
+}
 
 // Auth is required on any non-loopback bind (the default 0.0.0.0 exposes LAN
 // + Tailscale). On a loopback bind it is skipped for local DX (any local
@@ -379,7 +390,12 @@ up.post(tap: .cghidEventTap)
 }
 
 // ─── server ──────────────────────────────────────────────────────────
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: true,
+  ...(USE_TLS
+    ? { https: { key: readFileSync(TLS_KEY), cert: readFileSync(TLS_CERT) } }
+    : {}),
+});
 
 // Uniform response envelope. Every route returns { ok: true, data: ... } on
 // success and { ok: false, error: '...', ...extra } on failure. This is the
@@ -1933,10 +1949,20 @@ app.post(
 );
 
 // ─── boot ────────────────────────────────────────────────────────────
+const SCHEME = USE_TLS ? 'https' : 'http';
 app
   .listen({ port: PORT, host: HOST })
   .then(() => {
-    console.log(`chrome-bridge listening on http://${HOST}:${PORT}`);
+    console.log(`chrome-bridge listening on ${SCHEME}://${HOST}:${PORT}`);
+    // cleartext warning (004) — only when exposed (non-loopback) and not using TLS
+    if (!USE_TLS && !isLoopbackHost(HOST)) {
+      console.warn(
+        `WARNING: serving cleartext HTTP on non-loopback bind (${HOST}). ` +
+          `Requests (including any bearer token, when auth is on) are sniffable on this network — ` +
+          `and BRIDGE_TOKEN is a root password for your Chrome session. ` +
+          `Use Tailscale, bind 127.0.0.1, or set TLS_CERT/TLS_KEY.`,
+      );
+    }
     if (!AUTH_REQUIRED) {
       if (isLoopbackHost(HOST)) {
         console.warn(
