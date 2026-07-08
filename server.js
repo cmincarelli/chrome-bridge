@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
+import { asString, tabRef, defaultPort, urlsMatch, humanPath } from './lib.js';
 
 const exec = promisify(execFile);
 
@@ -44,17 +45,6 @@ async function osa(script, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return stdout.trimEnd();
 }
 
-function asString(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-// Resolve tab target — optional 1-based tab index, defaults to active tab
-function tabRef(tab) {
-  return tab
-    ? `tab ${Math.max(1, Number(tab))} of window 1`
-    : `active tab of window 1`;
-}
-
 async function chromeNavigate(url, tab) {
   await ensureWindow();
   const safe = asString(url);
@@ -82,28 +72,6 @@ async function chromeLocationHref(tab, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // normalization (trailing slash, host case, default ports) via the URL parser.
 // Returns false when either value is not a parseable absolute http(s) URL —
 // the safe default is "different", which forces the URL-change guard.
-function defaultPort(protocol) {
-  return protocol === 'https:' ? '443' : protocol === 'http:' ? '80' : '';
-}
-function urlsMatch(a, b) {
-  try {
-    const ua = new URL(a);
-    const ub = new URL(b);
-    if (ua.protocol !== ub.protocol) return false;
-    if (ua.hostname.toLowerCase() !== ub.hostname.toLowerCase()) return false;
-    const portA = ua.port || defaultPort(ua.protocol);
-    const portB = ub.port || defaultPort(ub.protocol);
-    if (portA !== portB) return false;
-    // Ignore hash; normalize empty pathname to "/".
-    const norm = (p) => (p === '' ? '/' : p);
-    if (norm(ua.pathname) !== norm(ub.pathname)) return false;
-    if (ua.search !== ub.search) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // After chromeNavigate, the old page's readyState is still 'complete' until the
 // new navigation begins. Wait for evidence that THIS navigation happened, then
 // for readyState to return to 'complete'. beforeUrl is the pre-navigation
@@ -232,33 +200,6 @@ async function chromeEval(js, timeoutMs, tab) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-}
-
-// Returns array of [x, y] screen-coordinate waypoints following a curved,
-// noisy path from (x0,y0) to (x1,y1). steps controls resolution.
-function humanPath(x0, y0, x1, y1, steps) {
-  steps = Math.max(1, steps);
-  const dx = x1 - x0, dy = y1 - y0;
-  const len = Math.hypot(dx, dy);
-  const perp = (Math.random() - 0.5) * len * 0.4;
-  const nx = len > 0 ? -dy / len : 0;
-  const ny = len > 0 ?  dx / len : 0;
-  const cx = (x0 + x1) / 2 + nx * perp;
-  const cy = (y0 + y1) / 2 + ny * perp;
-
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const raw = i / steps;
-    const t = raw < 0.5 ? 2 * raw * raw : 1 - 2 * (1 - raw) ** 2;
-    const bx = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t ** 2 * x1;
-    const by = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t ** 2 * y1;
-    const amp = Math.min(t, 1 - t) * Math.min(len * 0.05, 8);
-    pts.push([
-      Math.round(bx + (Math.random() + Math.random() - 1) * amp),
-      Math.round(by + (Math.random() + Math.random() - 1) * amp),
-    ]);
-  }
-  return pts;
 }
 
 // Runs Swift code from a tempfile — avoids Accessibility permission requirement
