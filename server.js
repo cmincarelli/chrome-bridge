@@ -63,10 +63,96 @@ async function chromeNavigate(url, tab) {
   );
 }
 
-async function chromeReadyState(tab) {
+async function chromeReadyState(tab, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return osa(
     `tell application "${BROWSER}" to execute ${tabRef(tab)} javascript "document.readyState"`,
+    timeoutMs,
   );
+}
+
+// Read location.href via AppleScript (mirrors chromeReadyState's style — no tempfile).
+async function chromeLocationHref(tab, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return osa(
+    `tell application "${BROWSER}" to execute ${tabRef(tab)} javascript "location.href"`,
+    timeoutMs,
+  );
+}
+
+// Compare two URLs for "same navigation target" ignoring fragments and trivial
+// normalization (trailing slash, host case, default ports) via the URL parser.
+// Returns false when either value is not a parseable absolute http(s) URL —
+// the safe default is "different", which forces the URL-change guard.
+function defaultPort(protocol) {
+  return protocol === 'https:' ? '443' : protocol === 'http:' ? '80' : '';
+}
+function urlsMatch(a, b) {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    if (ua.protocol !== ub.protocol) return false;
+    if (ua.hostname.toLowerCase() !== ub.hostname.toLowerCase()) return false;
+    const portA = ua.port || defaultPort(ua.protocol);
+    const portB = ub.port || defaultPort(ub.protocol);
+    if (portA !== portB) return false;
+    // Ignore hash; normalize empty pathname to "/".
+    const norm = (p) => (p === '' ? '/' : p);
+    if (norm(ua.pathname) !== norm(ub.pathname)) return false;
+    if (ua.search !== ub.search) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// After chromeNavigate, the old page's readyState is still 'complete' until the
+// new navigation begins. Wait for evidence that THIS navigation happened, then
+// for readyState to return to 'complete'. beforeUrl is the pre-navigation
+// location.href; requestedUrl is the url passed to /navigate. SETTLE_MS bounds
+// Phase 1 (covers same-URL / bfcache where readyState/URL may never change).
+// Returns { state, timedOut:false } on success or { state, timedOut:true } on
+// timeout. Operational errors propagate (not caught) → fail().
+const NAV_SETTLE_MS = 2000;
+async function waitForNavigationReady(tab, timeoutMs, beforeUrl, requestedUrl) {
+  const deadline = Date.now() + timeoutMs;
+  const settleDeadline = Date.now() + Math.min(NAV_SETTLE_MS, timeoutMs);
+  const poll = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Per-call osa timeout: leftover budget with a 500ms floor so osascript honors
+  // it. Bounded overrun of up to ~500ms per trailing poll is expected; the
+  // one-shot ensureWindow()/chromeNavigate() calls are NOT bounded here (fast,
+  // not on the polling loop).
+  const remaining = () => Math.max(500, deadline - Date.now());
+  const isSameUrl = beforeUrl != null && requestedUrl != null && urlsMatch(requestedUrl, beforeUrl);
+
+  // Phase 1: wait for the new navigation to begin — readyState leaves 'complete',
+  // OR (different-URL only) location.href changed away from beforeUrl. Bounded by
+  // settleDeadline so same-URL / instant-bfcache falls through.
+  while (Date.now() < settleDeadline && Date.now() < deadline) {
+    const s = await chromeReadyState(tab, remaining());
+    if (s !== 'complete') break;
+    if (!isSameUrl) {
+      if (Date.now() >= deadline) break; // re-check before the second osa call
+      const cur = await chromeLocationHref(tab, remaining());
+      if (cur !== beforeUrl) break; // URL flipped while still 'complete' (fast nav)
+    }
+    await poll(100);
+  }
+
+  // Phase 2: wait for readyState 'complete', with the URL-identity guard for
+  // different-URL navigations.
+  let lastState = 'loading';
+  while (Date.now() < deadline) {
+    const s = await chromeReadyState(tab, remaining());
+    lastState = s;
+    if (s === 'complete') {
+      if (isSameUrl) return { state: s, timedOut: false };
+      if (Date.now() >= deadline) break; // re-check before the second osa call
+      const cur = await chromeLocationHref(tab, remaining());
+      if (cur !== beforeUrl) return { state: s, timedOut: false };
+      // different-URL but URL hasn't changed yet → nav not begun/slow; keep waiting
+    }
+    await poll(200);
+  }
+  return { state: lastState, timedOut: true };
 }
 
 async function chromeInnerText(tab) {
@@ -450,23 +536,25 @@ app.post(
     if (typeof url !== 'string' || !/^https?:\/\//.test(url))
       return sendError(reply, 400, 'url must be http(s) string');
     try {
+      // For waited navigations, ensure a window/tab exists and capture the
+      // pre-navigation URL before chromeNavigate so the wait can prove the
+      // observed 'complete' belongs to THIS navigation (not the old page).
+      if (wait) await ensureWindow();
+      let beforeUrl = null;
+      if (wait) beforeUrl = await chromeLocationHref(tab, timeout_ms);
       await chromeNavigate(url, tab);
       if (wait) {
-        const deadline = Date.now() + timeout_ms;
-        while (Date.now() < deadline) {
-          const state = await chromeReadyState(tab);
-          if (state === 'complete') {
-            const raw = await chromeEval(
-              `String(performance.getEntriesByType('navigation')[0]?.responseStatus ?? '')`,
-              timeout_ms,
-              tab,
-            );
-            const status = raw ? parseInt(raw, 10) : undefined;
-            return ok({ state, ...(status ? { status } : {}) });
-          }
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        return sendError(reply, 408, 'timeout waiting for ready');
+        const result = await waitForNavigationReady(tab, timeout_ms, beforeUrl, url);
+        if (result.timedOut) return sendError(reply, 408, 'timeout waiting for ready');
+        // Post-wait status probe: bounded overhead (see Maintenance notes). Not
+        // on the polling deadline — the page is already loaded when it runs.
+        const raw = await chromeEval(
+          `String(performance.getEntriesByType('navigation')[0]?.responseStatus ?? '')`,
+          Math.min(timeout_ms, 10_000),
+          tab,
+        );
+        const status = raw ? parseInt(raw, 10) : undefined;
+        return ok({ state: result.state, ...(status ? { status } : {}) });
       }
       return ok({});
     } catch (err) {
