@@ -94,15 +94,29 @@ async function waitForNavigationReady(tab, timeoutMs, beforeUrl, requestedUrl) {
 
   // Phase 1: wait for readyState to leave 'complete', OR (requireChange)
   // location.href to change away from beforeUrl. Bounded by settleDeadline.
+  // navStarted records whether we observed a navigation begin (drop or URL
+  // change) — used below to distinguish "page was already ready" from "nav
+  // began, wait for its complete" in no-target mode.
+  let navStarted = false;
   while (Date.now() < settleDeadline && Date.now() < deadline) {
     const s = await chromeReadyState(tab, remaining());
-    if (s !== 'complete') break;
+    if (s !== 'complete') { navStarted = true; break; }
     if (requireChange) {
       if (Date.now() >= deadline) break;
       const cur = await chromeLocationHref(tab, remaining());
-      if (cur !== beforeUrl) break; // nav began
+      if (cur !== beforeUrl) { navStarted = true; break; } // nav began
     }
     await poll(100); // same-URL: polls until settleDeadline (unchanged from #7)
+  }
+
+  // No-target, nothing changed during settle, and settle has elapsed: treat
+  // the page as already-ready. This is reachable even when timeout_ms <= settle
+  // (where Phase 2's deadline gate would skip the loop entirely and 408). It is
+  // the documented stale-accept window — callers needing strictness must pass
+  // expected_url. Dead code for /navigate (noTarget is false there).
+  if (noTarget && !navStarted && Date.now() >= settleDeadline) {
+    const s = await chromeReadyState(tab, remaining());
+    if (s === 'complete') return { state: s, timedOut: false };
   }
 
   // Phase 2: wait for readyState 'complete', with the URL-identity guard.
