@@ -81,7 +81,7 @@ Quick reference:
 | Method | Path                 | Purpose                                       |
 | ------ | -------------------- | --------------------------------------------- |
 | GET    | `/health`            | Liveness check                                |
-| POST   | `/navigate`          | Navigate to URL; `wait:true` returns HTTP `status` |
+| POST   | `/navigate`          | Navigate to URL; `wait:true` blocks until the **new** page loads, then returns HTTP `status` |
 | GET    | `/ready-state`       | `document.readyState`                         |
 | POST   | `/wait-for-ready`    | Poll until `readyState === 'complete'`        |
 | GET    | `/url`               | Tab URL                                       |
