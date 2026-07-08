@@ -84,38 +84,39 @@ async function waitForNavigationReady(tab, timeoutMs, beforeUrl, requestedUrl) {
   const deadline = Date.now() + timeoutMs;
   const settleDeadline = Date.now() + Math.min(NAV_SETTLE_MS, timeoutMs);
   const poll = (ms) => new Promise((r) => setTimeout(r, ms));
-  // Per-call osa timeout: leftover budget with a 500ms floor so osascript honors
-  // it. Bounded overrun of up to ~500ms per trailing poll is expected; the
-  // one-shot ensureWindow()/chromeNavigate() calls are NOT bounded here (fast,
-  // not on the polling loop).
   const remaining = () => Math.max(500, deadline - Date.now());
   const isSameUrl = beforeUrl != null && requestedUrl != null && urlsMatch(requestedUrl, beforeUrl);
+  // No target URL (/wait-for-ready without expected_url): watch for a change,
+  // but if nothing changes during settle and the page is complete, accept it
+  // as already-ready (best-effort; has a stale-accept window — see Maintenance).
+  const noTarget = requestedUrl == null && beforeUrl != null;
+  const requireChange = !isSameUrl; // true for different-URL AND no-target
 
-  // Phase 1: wait for the new navigation to begin — readyState leaves 'complete',
-  // OR (different-URL only) location.href changed away from beforeUrl. Bounded by
-  // settleDeadline so same-URL / instant-bfcache falls through.
+  // Phase 1: wait for readyState to leave 'complete', OR (requireChange)
+  // location.href to change away from beforeUrl. Bounded by settleDeadline.
   while (Date.now() < settleDeadline && Date.now() < deadline) {
     const s = await chromeReadyState(tab, remaining());
     if (s !== 'complete') break;
-    if (!isSameUrl) {
-      if (Date.now() >= deadline) break; // re-check before the second osa call
+    if (requireChange) {
+      if (Date.now() >= deadline) break;
       const cur = await chromeLocationHref(tab, remaining());
-      if (cur !== beforeUrl) break; // URL flipped while still 'complete' (fast nav)
+      if (cur !== beforeUrl) break; // nav began
     }
-    await poll(100);
+    await poll(100); // same-URL: polls until settleDeadline (unchanged from #7)
   }
 
-  // Phase 2: wait for readyState 'complete', with the URL-identity guard for
-  // different-URL navigations.
+  // Phase 2: wait for readyState 'complete', with the URL-identity guard.
   let lastState = 'loading';
   while (Date.now() < deadline) {
     const s = await chromeReadyState(tab, remaining());
     lastState = s;
     if (s === 'complete') {
-      if (isSameUrl) return { state: s, timedOut: false };
-      if (Date.now() >= deadline) break; // re-check before the second osa call
+      if (isSameUrl) return { state: s, timedOut: false }; // same-URL: accept
+      if (Date.now() >= deadline) break;
       const cur = await chromeLocationHref(tab, remaining());
-      if (cur !== beforeUrl) return { state: s, timedOut: false };
+      if (cur !== beforeUrl) return { state: s, timedOut: false }; // change proven
+      if (noTarget && Date.now() >= settleDeadline)
+        return { state: s, timedOut: false }; // settle elapsed, no change → already ready
       // different-URL but URL hasn't changed yet → nav not begun/slow; keep waiting
     }
     await poll(200);
@@ -597,7 +598,7 @@ app.get(
   },
 );
 
-// POST /wait-for-ready { tab?, timeout_ms?, interval_ms? }
+// POST /wait-for-ready { tab?, timeout_ms?, interval_ms?, expected_url? }
 app.post(
   '/wait-for-ready',
   {
@@ -609,6 +610,10 @@ app.post(
           tab: { type: 'integer', minimum: 1 },
           timeout_ms: { type: 'integer', default: 30000 },
           interval_ms: { type: 'integer', default: 500 },
+          expected_url: {
+            type: 'string',
+            description: 'If set, strictly wait until this URL is loaded (requires location.href to change from the pre-call URL; redirect-tolerant). Omit for best-effort polling of an already-loaded page.',
+          },
         },
       },
       response: {
@@ -626,15 +631,14 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { tab, timeout_ms = 30_000, interval_ms = 500 } = req.body || {};
-    const deadline = Date.now() + timeout_ms;
+    const { tab, timeout_ms = 30_000, interval_ms = 500, expected_url } = req.body || {};
     try {
-      while (Date.now() < deadline) {
-        const state = await chromeReadyState(tab);
-        if (state === 'complete') return ok({ state });
-        await new Promise((r) => setTimeout(r, interval_ms));
-      }
-      return sendError(reply, 408, 'timeout waiting for ready');
+      // Capture pre-call URL so we can prove a navigation happened before
+      // accepting 'complete' (avoids returning the old page's readyState).
+      const beforeUrl = await chromeLocationHref(tab, timeout_ms);
+      const result = await waitForNavigationReady(tab, timeout_ms, beforeUrl, expected_url ?? null);
+      if (result.timedOut) return sendError(reply, 408, 'timeout waiting for ready');
+      return ok({ state: result.state });
     } catch (err) {
       return fail(req, reply, err);
     }

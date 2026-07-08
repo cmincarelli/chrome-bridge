@@ -83,7 +83,7 @@ Quick reference:
 | GET    | `/health`            | Liveness check                                |
 | POST   | `/navigate`          | Navigate to URL; `wait:true` blocks until the **new** page loads, then returns HTTP `status` |
 | GET    | `/ready-state`       | `document.readyState`                         |
-| POST   | `/wait-for-ready`    | Poll until `readyState === 'complete'`        |
+| POST   | `/wait-for-ready`    | Poll until `readyState === 'complete'`; pass `expected_url` to strictly wait for a navigation (recommended after `/navigate`) |
 | GET    | `/url`               | Tab URL                                       |
 | GET    | `/state`             | URL, title, scroll position, viewport         |
 | GET    | `/inner-text`        | `document.body.innerText`                     |
