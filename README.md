@@ -54,6 +54,15 @@ Because `/eval` runs arbitrary JavaScript in your logged-in Chrome session,
 treat the bearer token like a root password and rotate it (`openssl rand -hex 32`)
 if it ever leaks.
 
+## Authentication
+
+By default, the bearer token is **required** on any non-loopback bind (`0.0.0.0`,
+Tailscale IP) and **skipped** on loopback (`127.0.0.1` / `localhost`) — so local
+scripts and `curl` work with no `.env` at all. Set `REQUIRE_AUTH=true` to force
+the token even on loopback, or `REQUIRE_AUTH=false` to disable it everywhere
+(not recommended on `0.0.0.0`). When auth is skipped, cross-origin browser
+requests are still rejected (browser-CSRF guard); local processes remain trusted.
+
 ## API
 
 Interactive docs at **`http://<host>:<port>/docs`** (Swagger UI, no auth required

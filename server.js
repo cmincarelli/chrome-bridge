@@ -22,14 +22,42 @@ const TOKEN = process.env.BRIDGE_TOKEN;
 const BROWSER = process.env.BROWSER || 'Google Chrome';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-if (!TOKEN) {
-  console.error('FATAL: BRIDGE_TOKEN env var is required');
+// Auth is required on any non-loopback bind (the default 0.0.0.0 exposes LAN
+// + Tailscale). On a loopback bind it is skipped for local DX (any local
+// process can already reach loopback). REQUIRE_AUTH=true|false overrides.
+// NOTE: new URL().hostname returns IPv6 literals WITH brackets (e.g. "[::1]"),
+// so normalize brackets before comparing.
+const isLoopbackHost = (h) => {
+  if (!h) return false;
+  const n = h.replace(/^\[|\]$/g, '').toLowerCase();
+  return ['127.0.0.1', 'localhost', '::1'].includes(n);
+};
+const AUTH_REQUIRED =
+  process.env.REQUIRE_AUTH === 'true' ? true
+  : process.env.REQUIRE_AUTH === 'false' ? false
+  : !isLoopbackHost(HOST);
+
+if (AUTH_REQUIRED && !TOKEN) {
+  console.error('FATAL: BRIDGE_TOKEN env var is required (auth required on bind ' + HOST + ')');
   process.exit(1);
 }
 
-const TOKEN_BUF = Buffer.from(TOKEN);
+const TOKEN_BUF = TOKEN ? Buffer.from(TOKEN) : null;
+
+// Reject cross-origin browser requests when auth is off (browser-CSRF guard).
+// Local scripts/curl send no Origin; same-machine browser dev tools on
+// localhost/127.0.0.1 are allowed. Returns true if Origin is absent or loopback.
+function isLoopbackOrigin(origin) {
+  if (!origin) return true;
+  try {
+    return isLoopbackHost(new URL(origin).hostname);
+  } catch {
+    return false; // malformed Origin → reject
+  }
+}
 
 function tokenMatches(provided) {
+  if (!TOKEN_BUF) return false;
   if (!provided) return false;
   const buf = Buffer.from(provided);
   if (buf.length !== TOKEN_BUF.length) return false;
@@ -416,6 +444,12 @@ await app.register(swaggerUi, {
 
 app.addHook('preHandler', async (req, reply) => {
   if (req.url === '/docs' || req.url.startsWith('/docs/')) return;
+  if (!AUTH_REQUIRED) {
+    // Auth skipped (loopback bind). Still block browser CSRF from cross-origin pages.
+    if (!isLoopbackOrigin(req.headers.origin))
+      return reply.code(403).send({ ok: false, error: 'cross-origin requests not allowed when auth is disabled' });
+    return; // no token check
+  }
   const auth = req.headers.authorization || '';
   const provided = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!tokenMatches(provided))
@@ -1901,7 +1935,23 @@ app.post(
 // ─── boot ────────────────────────────────────────────────────────────
 app
   .listen({ port: PORT, host: HOST })
-  .then(() => console.log(`chrome-bridge listening on http://${HOST}:${PORT}`))
+  .then(() => {
+    console.log(`chrome-bridge listening on http://${HOST}:${PORT}`);
+    if (!AUTH_REQUIRED) {
+      if (isLoopbackHost(HOST)) {
+        console.warn(
+          `NOTE: auth disabled (loopback bind ${HOST}). Any local process can drive Chrome. ` +
+          `Set REQUIRE_AUTH=true to force the bearer token.`,
+        );
+      } else {
+        console.warn(
+          `WARNING: auth disabled by REQUIRE_AUTH=false on non-loopback bind ${HOST} — the bridge is open to the network with no token.`,
+        );
+      }
+    } else {
+      console.log('auth: bearer token required');
+    }
+  })
   .catch((err) => {
     console.error(err);
     process.exit(1);
