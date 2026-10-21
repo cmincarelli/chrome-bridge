@@ -105,7 +105,8 @@ Quick reference:
 | POST   | `/scroll-down`       | Scroll down N times (for infinite feeds)     |
 | POST   | `/hover`             | Dispatch `mouseover`/`mouseenter`             |
 | POST   | `/key`               | Dispatch `keydown`/`keyup`                    |
-| POST   | `/get-html`          | `outerHTML` of selector, or `body.innerHTML` |
+| POST   | `/inner-html`        | `innerHTML` of selector, or `body.innerHTML` |
+| POST   | `/outer-html`        | `outerHTML` of selector, or `body.outerHTML` |
 | POST   | `/wait-for-selector` | Poll until selector matches                   |
 | GET    | `/tabs`              | List all tabs across all windows              |
 | POST   | `/new-tab`           | Open a new tab                                |

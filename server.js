@@ -1411,18 +1411,62 @@ app.post(
   },
 );
 
-// POST /get-html { selector?, tab? }
+// POST /inner-html { selector?, tab? }
 app.post(
-  '/get-html',
+  '/inner-html',
   {
     schema: {
-      summary: 'Get outerHTML of selector or document.body.innerHTML',
+      summary: 'Get innerHTML of selector or document.body.innerHTML',
       body: {
         type: 'object',
         properties: {
           selector: {
             type: 'string',
-            description: 'Returns outerHTML of match; omit for body.innerHTML',
+            description: 'Returns innerHTML of match; omit for body.innerHTML',
+          },
+          tab: { type: 'integer', minimum: 1 },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: { html: { type: 'string', nullable: true } },
+            },
+          },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { selector, tab } = req.body || {};
+    try {
+      const js = selector
+        ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); return el ? el.innerHTML : null; })()`
+        : `document.body.innerHTML`;
+      const raw = await chromeEval(js, 60_000, tab);
+      return ok({ html: raw });
+    } catch (err) {
+      return fail(req, reply, err);
+    }
+  },
+);
+
+// POST /outer-html { selector?, tab? }
+app.post(
+  '/outer-html',
+  {
+    schema: {
+      summary: 'Get outerHTML of selector or document.body.outerHTML',
+      body: {
+        type: 'object',
+        properties: {
+          selector: {
+            type: 'string',
+            description: 'Returns outerHTML of match; omit for body.outerHTML',
           },
           tab: { type: 'integer', minimum: 1 },
         },
@@ -1446,7 +1490,7 @@ app.post(
     try {
       const js = selector
         ? `(function(){ const el=document.querySelector(${JSON.stringify(selector)}); return el ? el.outerHTML : null; })()`
-        : `document.body.innerHTML`;
+        : `document.body.outerHTML`;
       const raw = await chromeEval(js, 60_000, tab);
       return ok({ html: raw });
     } catch (err) {

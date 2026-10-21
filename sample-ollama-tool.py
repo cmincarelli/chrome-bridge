@@ -120,18 +120,31 @@ class Tools:
         """Get the rendered text (document.body.innerText) of the active tab."""
         return json.dumps(self._request("GET", "/inner-text"))
 
-    def get_html(
+    def get_inner_html(
         self,
         selector: Annotated[
             str,
             Field(
-                description="CSS selector to return outerHTML for. Empty for full body.innerHTML."
+                description="CSS selector to return innerHTML for. Empty for full body.innerHTML."
             ),
         ] = "",
     ) -> str:
-        """Get the outerHTML of an element matching a CSS selector, or document.body.innerHTML."""
+        """Get the innerHTML of an element matching a CSS selector, or document.body.innerHTML."""
         body = {"selector": selector} if selector else {}
-        return json.dumps(self._request("POST", "/get-html", json=body))
+        return json.dumps(self._request("POST", "/inner-html", json=body))
+
+    def get_outer_html(
+        self,
+        selector: Annotated[
+            str,
+            Field(
+                description="CSS selector to return outerHTML for. Empty for full body.outerHTML."
+            ),
+        ] = "",
+    ) -> str:
+        """Get the outerHTML of an element matching a CSS selector, or document.body.outerHTML."""
+        body = {"selector": selector} if selector else {}
+        return json.dumps(self._request("POST", "/outer-html", json=body))
 
     def eval_js(
         self,
