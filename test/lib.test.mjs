@@ -2,8 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  PACE_MIN_INTERVAL_S,
+  PACE_WARN_HOST_PER_MINUTE,
+  PACE_WARN_PER_MINUTE,
+  PACE_WARN_WAIT_S,
   VIEWPORT_ORIGIN_FIELDS_JS,
   asString,
+  createPaceTracker,
   defaultPort,
   humanPath,
   tabRef,
@@ -97,4 +102,98 @@ test("VIEWPORT_ORIGIN_FIELDS_JS contains the viewport origin formula", () => {
 
 test("VIEWPORT_ORIGIN_FIELDS_JS is an object expression", () => {
   assert.doesNotMatch(VIEWPORT_ORIGIN_FIELDS_JS, /JSON\.stringify/);
+});
+
+test("pace tracker: first navigation has no prior gap and no warning", () => {
+  const record = createPaceTracker(() => 1_000_000);
+  const pace = record("https://example.com/");
+  assert.equal(pace.navigations_last_minute, 1);
+  assert.equal(pace.navigations_last_10_minutes, 1);
+  assert.equal(pace.same_host_last_minute, 1);
+  assert.equal(pace.seconds_since_last_navigation, null);
+  assert.equal(pace.suggested_wait_seconds, PACE_MIN_INTERVAL_S);
+  assert.equal(pace.warning, undefined);
+});
+
+test("pace tracker: counts accumulate and gap is measured to prior navigation", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  record("https://example.com/a");
+  now += 7_000;
+  const pace = record("https://example.com/b");
+  assert.equal(pace.navigations_last_minute, 2);
+  assert.equal(pace.same_host_last_minute, 2);
+  assert.equal(pace.seconds_since_last_navigation, 7);
+  assert.equal(pace.warning, undefined);
+});
+
+test("pace tracker: same_host only counts matching hostnames", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  record("https://example.com/");
+  now += 1_000;
+  record("https://other.org/");
+  now += 1_000;
+  const pace = record("https://example.com/page");
+  assert.equal(pace.navigations_last_minute, 3);
+  assert.equal(pace.same_host_last_minute, 2);
+  assert.equal(pace.warning, undefined);
+});
+
+test("pace tracker: warns at the global per-minute threshold", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  let pace;
+  for (let i = 0; i < PACE_WARN_PER_MINUTE; i++) {
+    pace = record(`https://host${i}.example/`); // different hosts each time
+    now += 1_000;
+  }
+  assert.equal(pace.navigations_last_minute, PACE_WARN_PER_MINUTE);
+  assert.equal(pace.suggested_wait_seconds, PACE_WARN_WAIT_S);
+  assert.match(pace.warning, /bot-blocking/);
+  assert.match(pace.warning, /Wait at least/);
+});
+
+test("pace tracker: warns at the per-host threshold below the global one", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  let pace;
+  for (let i = 0; i < PACE_WARN_HOST_PER_MINUTE; i++) {
+    pace = record("https://example.com/");
+    now += 1_000;
+  }
+  assert.equal(pace.navigations_last_minute, PACE_WARN_HOST_PER_MINUTE); // < global warn
+  assert.equal(pace.same_host_last_minute, PACE_WARN_HOST_PER_MINUTE);
+  assert.equal(pace.suggested_wait_seconds, PACE_WARN_WAIT_S);
+  assert.match(pace.warning, /example\.com/);
+});
+
+test("pace tracker: entries older than 10 minutes are pruned", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  record("https://example.com/old");
+  now += 10 * 60_000 + 1; // just outside the window
+  const pace = record("https://example.com/new");
+  assert.equal(pace.navigations_last_10_minutes, 1);
+  assert.equal(pace.navigations_last_minute, 1);
+  assert.equal(pace.seconds_since_last_navigation, null); // prior entry pruned
+});
+
+test("pace tracker: entries older than 60s drop out of the per-minute count", () => {
+  let now = 1_000_000;
+  const record = createPaceTracker(() => now);
+  record("https://example.com/");
+  now += 61_000;
+  const pace = record("https://example.com/");
+  assert.equal(pace.navigations_last_minute, 1);
+  assert.equal(pace.navigations_last_10_minutes, 2);
+  assert.equal(pace.seconds_since_last_navigation, 61);
+});
+
+test("pace tracker: unparseable URL yields null host without throwing", () => {
+  const record = createPaceTracker(() => 1_000_000);
+  const pace = record("not a url");
+  assert.equal(pace.same_host_last_minute, 0);
+  assert.equal(pace.navigations_last_minute, 1);
+  assert.equal(pace.warning, undefined);
 });

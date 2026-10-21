@@ -59,6 +59,58 @@ export function humanPath(x0, y0, x1, y1, steps) {
   return pts;
 }
 
+// Navigation pace tracking — feedback only, never blocks. In-memory sliding
+// window; resets on restart (acceptable for a single-user bridge).
+export const PACE_MIN_INTERVAL_S = 2;
+export const PACE_WARN_PER_MINUTE = 10;
+export const PACE_WARN_HOST_PER_MINUTE = 6;
+export const PACE_WARN_WAIT_S = 30;
+const PACE_WINDOW_MS = 10 * 60_000;
+
+// Factory: returns a recordNavigation(url) closure holding its own navigation
+// history. nowFn is injectable for tests.
+export function createPaceTracker(nowFn = Date.now) {
+  const history = []; // [{ t: epochMs, host: string|null }]
+  return function recordNavigation(url) {
+    const now = nowFn();
+    let host = null;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      /* url is validated upstream; defensive only */
+    }
+    // prune entries outside the 10-minute window
+    while (history.length && now - history[0].t > PACE_WINDOW_MS)
+      history.shift();
+    const prev = history.length ? history[history.length - 1] : null;
+    history.push({ t: now, host });
+    const lastMinute = history.filter((n) => now - n.t <= 60_000);
+    const sameHost = host ? lastMinute.filter((n) => n.host === host).length : 0;
+    const warn =
+      lastMinute.length >= PACE_WARN_PER_MINUTE ||
+      (host && sameHost >= PACE_WARN_HOST_PER_MINUTE);
+    const suggested = warn ? PACE_WARN_WAIT_S : PACE_MIN_INTERVAL_S;
+    const pace = {
+      navigations_last_minute: lastMinute.length,
+      navigations_last_10_minutes: history.length,
+      same_host_last_minute: sameHost,
+      seconds_since_last_navigation: prev
+        ? Math.round((now - prev.t) / 1000)
+        : null,
+      suggested_wait_seconds: suggested,
+    };
+    if (warn) {
+      pace.warning =
+        `${lastMinute.length} navigations in the last minute` +
+        (host ? ` (${sameHost} to ${host})` : '') +
+        ` — this pace risks bot-blocking. Wait at least ${suggested} seconds ` +
+        `before your next navigation, and prefer /wait-for-ready or ` +
+        `/wait-for-selector over repeated navigation to poll for changes.`;
+    }
+    return pace;
+  };
+}
+
 // JS object expression (runs in the page) for the viewport top-left in screen
 // coords. Single source of truth for the Chrome viewport→screen offset; injected
 // into chromeEval scripts by screenshotViewport (spread), humanMouseMove (.x/.y),
