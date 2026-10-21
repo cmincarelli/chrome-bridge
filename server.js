@@ -438,7 +438,16 @@ await app.register(swagger, {
       title: 'chrome-bridge',
       version: '1.0.0',
       description:
-        'HTTP bridge for controlling Chrome on macOS via AppleScript. Every response uses a uniform envelope: { ok: bool, data?: ..., error?: string }.',
+        'HTTP bridge for controlling Chrome on macOS via AppleScript. Every response uses a uniform envelope: { ok: bool, data?: ..., error?: string }.\n\n' +
+        '## Guidelines for automated agents\n\n' +
+        'This bridge drives a real, signed-in Chrome session. Websites treat that session as a human user — keep it that way. Bot-like behavior (rapid-fire requests, tight polling loops, burst submissions) triggers rate limits, CAPTCHAs, and IP/account blocks.\n\n' +
+        '**Required behavior:**\n' +
+        '- **Pace yourself like a human.** Allow 2–5 seconds between page interactions, and longer (5–10s) after navigations, logins, and form submissions. Never send multiple actions per second.\n' +
+        '- **Wait, don\'t poll.** Prefer `/wait-for-ready` and `/wait-for-selector` over repeatedly calling `/state`, `/inner-text`, or `/eval` to check whether something happened. If you must poll, use intervals of at least 1–2 seconds with a generous timeout — never a tight loop.\n' +
+        '- **Batch related steps.** Use `/batch` to run a sequence of actions in one HTTP call instead of many separate requests.\n' +
+        '- **Don\'t re-fetch aggressively.** Cache page content you already retrieved; avoid reloading the same page or re-scraping the same data in quick succession.\n' +
+        '- **Back off when blocked.** If you hit a CAPTCHA, rate-limit page, or unusual traffic warning, STOP retrying and report the block to the operator — repeated attempts make blocks worse and longer-lasting.\n' +
+        '- **Respect the sites you visit.** Honor robots.txt, terms of service, and the operator\'s instructions. Act as a courteous assistant using a normal browser, not a scraper.',
     },
     components: {
       securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } },
