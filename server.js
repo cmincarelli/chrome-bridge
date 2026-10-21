@@ -667,7 +667,10 @@ app.post(
                     navigations_last_minute: { type: 'integer' },
                     navigations_last_10_minutes: { type: 'integer' },
                     same_host_last_minute: { type: 'integer' },
-                    seconds_since_last_navigation: { type: ['integer', 'null'] },
+                    seconds_since_last_navigation: {
+                      type: 'integer',
+                      nullable: true,
+                    },
                     suggested_wait_seconds: { type: 'integer' },
                     warning: { type: 'string' },
                   },
