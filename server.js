@@ -13,7 +13,11 @@ import { tmpdir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { asString, tabRef, defaultPort, urlsMatch, humanPath,
-         VIEWPORT_ORIGIN_FIELDS_JS, viewportToScreenExpr } from './lib.js';
+         VIEWPORT_ORIGIN_FIELDS_JS, viewportToScreenExpr,
+         createPaceTracker } from './lib.js';
+
+// Navigation pace tracker (feedback only — see lib.js and the pace spec).
+const recordNavigation = createPaceTracker();
 
 const exec = promisify(execFile);
 
@@ -625,7 +629,10 @@ app.post(
   '/navigate',
   {
     schema: {
-      summary: 'Navigate to URL',
+      summary:
+        'Navigate to URL. Responses include a pace object with recent-navigation ' +
+        'counters and suggested_wait_seconds — honor it, and stop navigating when ' +
+        'pace.warning is present (bot-block risk).',
       body: {
         type: 'object',
         required: ['url'],
@@ -654,6 +661,17 @@ app.post(
               properties: {
                 state: { type: 'string' },
                 status: { type: 'integer' },
+                pace: {
+                  type: 'object',
+                  properties: {
+                    navigations_last_minute: { type: 'integer' },
+                    navigations_last_10_minutes: { type: 'integer' },
+                    same_host_last_minute: { type: 'integer' },
+                    seconds_since_last_navigation: { type: ['integer', 'null'] },
+                    suggested_wait_seconds: { type: 'integer' },
+                    warning: { type: 'string' },
+                  },
+                },
               },
             },
           },
@@ -673,6 +691,9 @@ app.post(
       let beforeUrl = null;
       if (wait) beforeUrl = await chromeLocationHref(tab, timeout_ms);
       await chromeNavigate(url, tab);
+      // Record AFTER chromeNavigate succeeds: only real navigations generate
+      // site traffic (400-validation and AppleScript failures don't count).
+      const pace = recordNavigation(url);
       if (wait) {
         const result = await waitForNavigationReady(tab, timeout_ms, beforeUrl, url);
         if (result.timedOut) return sendError(reply, 408, 'timeout waiting for ready');
@@ -684,9 +705,9 @@ app.post(
           tab,
         );
         const status = raw ? parseInt(raw, 10) : undefined;
-        return ok({ state: result.state, ...(status ? { status } : {}) });
+        return ok({ state: result.state, ...(status ? { status } : {}), pace });
       }
-      return ok({});
+      return ok({ pace });
     } catch (err) {
       return fail(req, reply, err);
     }
