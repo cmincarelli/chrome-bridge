@@ -14,10 +14,15 @@
 
 ### Task 1: Add pace-tracking state and `recordNavigation` helper
 
+> **Executed with one deviation:** `tabRef` and the other pure helpers had since
+> been extracted to `lib.js` (commit c27b716), so the tracker landed there as a
+> `createPaceTracker(nowFn)` factory with an injectable clock, covered by
+> `test/lib.test.mjs` (`pnpm test`). `server.js` imports and instantiates it.
+
 **Files:**
 - Modify: `server.js` — insert after the `tabRef` helper (before the Chrome helpers block)
 
-- [ ] **Step 1: Insert the pace tracker**
+- [x] **Step 1: Insert the pace tracker**
 
 ```js
 // Navigation pace tracking — feedback only, never blocks. In-memory sliding
@@ -70,7 +75,7 @@ function recordNavigation(url) {
 }
 ```
 
-- [ ] **Step 2: Verify the server starts**
+- [x] **Step 2: Verify the server starts**
 
 ```bash
 node --check server.js && pnpm start
@@ -78,7 +83,7 @@ node --check server.js && pnpm start
 
 Expected: starts cleanly, no syntax errors. Ctrl-C to stop.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add server.js
@@ -96,7 +101,7 @@ git commit -m "feat: add navigation pace tracker (recordNavigation helper)"
 in the schema. The handler and schema changes MUST land together or `pace`
 silently disappears from responses.
 
-- [ ] **Step 1: Update the response schema**
+- [x] **Step 1: Update the response schema**
 
 In the `/navigate` route's `schema.response.200.properties.data.properties`,
 add alongside the existing `state`/`status`:
@@ -115,7 +120,7 @@ pace: {
 },
 ```
 
-- [ ] **Step 2: Update the handler**
+- [x] **Step 2: Update the handler**
 
 After `await chromeNavigate(url, tab);` add:
 
@@ -138,7 +143,7 @@ return ok({ pace });
 Recording happens after `chromeNavigate` so 400-validation failures and
 AppleScript errors don't count — only real navigations generate site traffic.
 
-- [ ] **Step 3: Update the route summary/description**
+- [x] **Step 3: Update the route summary/description**
 
 Extend the schema `summary` to mention pacing feedback, e.g.:
 
@@ -149,7 +154,7 @@ summary:
   'pace.warning is present (bot-block risk).',
 ```
 
-- [ ] **Step 4: Manual verification**
+- [x] **Step 4: Manual verification**
 
 Start the server, then:
 
@@ -171,7 +176,7 @@ curl -s http://127.0.0.1:8765/docs/json | python3 -c \
 Expected: `pace` present in both responses with correct counters; `True` from
 the docs check.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server.js
@@ -184,7 +189,7 @@ git commit -m "feat: /navigate returns pace feedback (counters, suggested wait, 
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Confirm batched navigations are counted**
+- [x] **Step 1: Confirm batched navigations are counted**
 
 With the server running:
 
@@ -199,7 +204,7 @@ Expected: each step's inner `body.data.pace` is present, and the second step's
 `navigations_last_minute` includes the first step's navigation (proving
 `/batch` steps flow through the counted handler).
 
-- [ ] **Step 2: Confirm the warning path**
+- [x] **Step 2: Confirm the warning path**
 
 Fire 10 rapid navigations to the same host (a tight shell loop is fine here —
 this is a local test against example.com, not a real target). On the 10th,
@@ -212,12 +217,12 @@ expect `pace.warning` present and `suggested_wait_seconds: 30`.
 **Files:**
 - Modify: `README.md` — endpoint table
 
-- [ ] **Step 1: Update the `/navigate` row**
+- [x] **Step 1: Update the `/navigate` row**
 
 Append to its Purpose cell: "response includes `pace` feedback (counters,
 `suggested_wait_seconds`, `warning`) — honor it to avoid bot-blocking".
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add README.md
