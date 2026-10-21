@@ -90,7 +90,7 @@ Quick reference:
 | Method | Path                 | Purpose                                       |
 | ------ | -------------------- | --------------------------------------------- |
 | GET    | `/health`            | Liveness check                                |
-| POST   | `/navigate`          | Navigate to URL; `wait:true` blocks until the **new** page loads, then returns HTTP `status` |
+| POST   | `/navigate`          | Navigate to URL; `wait:true` blocks until the **new** page loads, then returns HTTP `status`. Response includes `pace` feedback (counters, `suggested_wait_seconds`, `warning`) — honor it to avoid bot-blocking |
 | GET    | `/ready-state`       | `document.readyState`                         |
 | POST   | `/wait-for-ready`    | Poll until `readyState === 'complete'`; pass `expected_url` to strictly wait for a navigation (recommended after `/navigate`) |
 | GET    | `/url`               | Tab URL                                       |
