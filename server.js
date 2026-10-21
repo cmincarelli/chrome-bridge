@@ -453,7 +453,7 @@ await app.register(swaggerUi, {
 });
 
 app.addHook('preHandler', async (req, reply) => {
-  if (req.url === '/docs' || req.url.startsWith('/docs/')) return;
+  if (req.url === '/' || req.url === '/index' || req.url === '/docs' || req.url.startsWith('/docs/')) return;
   if (!AUTH_REQUIRED) {
     // Auth skipped (loopback bind). Still block browser CSRF from cross-origin pages.
     if (!isLoopbackOrigin(req.headers.origin))
@@ -465,6 +465,127 @@ app.addHook('preHandler', async (req, reply) => {
   if (!tokenMatches(provided))
     return reply.code(401).send({ ok: false, error: 'unauthorized' });
 });
+
+// GET /index — landing page with links to the API docs
+const INDEX_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chrome-bridge</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #131824;
+    --border: #232b3d;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --accent: #4f8ef7;
+    --accent-soft: rgba(79, 142, 247, 0.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  main { width: 100%; max-width: 640px; }
+  .badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid rgba(79, 142, 247, 0.35);
+    border-radius: 999px;
+    padding: 0.2rem 0.75rem;
+    margin-bottom: 1rem;
+  }
+  h1 { font-size: 2.25rem; font-weight: 700; letter-spacing: -0.02em; }
+  .subtitle { color: var(--muted); margin: 0.75rem 0 2rem; font-size: 1.05rem; }
+  .cards { display: grid; gap: 0.75rem; }
+  a.card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.1rem 1.25rem;
+    text-decoration: none;
+    color: var(--text);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  a.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .card-title { font-weight: 600; font-size: 1rem; }
+  .card-desc { color: var(--muted); font-size: 0.875rem; margin-top: 0.2rem; }
+  .arrow { color: var(--muted); font-size: 1.1rem; flex-shrink: 0; }
+  a.card:hover .arrow { color: var(--accent); }
+  footer { margin-top: 2rem; color: var(--muted); font-size: 0.8rem; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.85em;
+  }
+</style>
+</head>
+<body>
+<main>
+  <span class="badge">macOS Chrome Automation</span>
+  <h1>chrome-bridge</h1>
+  <p class="subtitle">HTTP bridge for controlling Chrome via AppleScript &mdash; navigate, evaluate JavaScript, click, type, screenshot, and more.</p>
+  <div class="cards">
+    <a class="card" href="/docs">
+      <div>
+        <div class="card-title">API Documentation</div>
+        <div class="card-desc">Interactive Swagger UI &mdash; browse and try every endpoint</div>
+      </div>
+      <span class="arrow">&rarr;</span>
+    </a>
+    <a class="card" href="/docs/json">
+      <div>
+        <div class="card-title">OpenAPI Specification</div>
+        <div class="card-desc">Machine-readable <code>/docs/json</code> schema for codegen and tooling</div>
+      </div>
+      <span class="arrow">&rarr;</span>
+    </a>
+    <a class="card" href="https://github.com/cmincarelli/chrome-bridge">
+      <div>
+        <div class="card-title">Source &amp; Setup</div>
+        <div class="card-desc">Repository, configuration, and security notes</div>
+      </div>
+      <span class="arrow">&rarr;</span>
+    </a>
+  </div>
+  <footer>All endpoints require <code>Authorization: Bearer &lt;BRIDGE_TOKEN&gt;</code> unless bound to loopback.</footer>
+</main>
+</body>
+</html>`;
+
+const indexHandler = async (req, reply) => {
+  return reply.type('text/html; charset=utf-8').send(INDEX_HTML);
+};
+const indexSchema = {
+  schema: {
+    summary: 'Landing page with links to the API docs',
+    hide: true,
+  },
+};
+
+app.get('/', indexSchema, indexHandler);
+app.get('/index', indexSchema, indexHandler);
 
 // GET /health
 app.get(
